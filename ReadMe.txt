@@ -1,4 +1,4 @@
-MTP Devices plugin v1.4
+MTP Devices plugin v1.5
 =======================
 Modified from Windows Media Audio 2 (wpdplug) by Christian Ghisler.
 
@@ -32,6 +32,12 @@ read; new settings are stored under [MTPDevices].
 
 History
 =======
+20260819 Release v1.5
+20260819 Added: Background F5/F6 transfers (FsGetBackgroundFlags) with a lock around WPD calls
+20260819 Added: Custom columns (Type, Title, Artist, Album, Duration, Bitrate, Width, Height, Free, Capacity, Serial, Battery)
+20260819 Added: Thumbnails from WPD_RESOURCE_THUMBNAIL / album art / icon
+20260819 Added: Device icon in the file list; hidden/system attributes from WPD
+20260819 Added: FsStatusInfo + IPortableDevice::Cancel on abort; listing progress
 20260819 Renamed plugin to "MTP Devices" (files mtpdevices.wfx / mtpdevices.wfx64)
 20260819 Release v1.4
 20260819 Fixed: Device names containing \, /, * or ? were not sanitized (path lookup broke)

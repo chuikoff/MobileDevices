@@ -65,6 +65,8 @@
 #define FS_STATUS_OP_SYNC_GET 16
 #define FS_STATUS_OP_SYNC_PUT 17
 #define FS_STATUS_OP_SYNC_DELETE 18
+#define FS_STATUS_OP_GET_MULTI_THREAD 19
+#define FS_STATUS_OP_PUT_MULTI_THREAD 20
 
 #define FS_ICONFLAG_SMALL 1
 #define FS_ICONFLAG_BACKGROUND 2
@@ -88,6 +90,10 @@
 
 
 #define FS_CRYPTOPT_MASTERPASS_SET 1   // The user already has a master password defined
+
+#define BG_DOWNLOAD 1                  // Plugin supports downloads in background
+#define BG_UPLOAD 2                    // Plugin supports uploads in background
+#define BG_ASK_USER 4                  // Plugin requires separate connection for background transfers -> ask user first
 
 typedef struct {
     DWORD SizeLow,SizeHigh;
@@ -255,6 +261,8 @@ int __stdcall FsContentSetValueW(WCHAR* FileName,int FieldIndex,int UnitIndex,in
 
 BOOL __stdcall FsContentGetDefaultView(char* ViewContents,char* ViewHeaders,char* ViewWidths,char* ViewOptions,int maxlen);
 BOOL __stdcall FsContentGetDefaultViewW(WCHAR* ViewContents,WCHAR* ViewHeaders,WCHAR* ViewWidths,WCHAR* ViewOptions,int maxlen);
+
+int __stdcall FsGetBackgroundFlags(void);
 
 
 

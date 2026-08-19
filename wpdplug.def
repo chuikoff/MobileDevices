@@ -25,4 +25,16 @@ EXPORTS
 	FsSetDefaultParams
 	FsContentGetSupportedField
 	FsContentGetValue
+	FsContentGetValueW
+	FsContentStopGetValue
+	FsContentStopGetValueW
+	FsContentGetDefaultView
+	FsContentGetDefaultViewW
 	FsContentPluginUnloading
+	FsGetBackgroundFlags
+	FsStatusInfo
+	FsStatusInfoW
+	FsGetPreviewBitmap
+	FsGetPreviewBitmapW
+	FsExtractCustomIcon
+	FsExtractCustomIconW

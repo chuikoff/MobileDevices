@@ -13,8 +13,14 @@
 #include "fsplugin.h"
 #include "utils.h"
 #include "connectionsettings.h"
+#include "wpdplug_int.h"
 
 #define DefPluginTitle PLUGIN_DISPLAY_NAME
+
+CRITICAL_SECTION g_cs;
+volatile LONG g_abort=0;
+volatile LONG g_contentStop=0;
+IPortableDevice* g_cancelDevice=NULL;
 
 WCHAR DefaultIniNameW[MAX_PATH];
 HINSTANCE hInst;
@@ -67,9 +73,13 @@ BOOL APIENTRY DllMain( HMODULE hModule,
 	{
 	case DLL_PROCESS_ATTACH:
 		hInst=(HINSTANCE)hModule;
+		InitializeCriticalSection(&g_cs);
+		break;
 	case DLL_THREAD_ATTACH:
 	case DLL_THREAD_DETACH:
+		break;
 	case DLL_PROCESS_DETACH:
+		DeleteCriticalSection(&g_cs);
 		break;
 	}
     return TRUE;
@@ -107,6 +117,7 @@ typedef struct {
 	DWORD szObjectIDsFetched;
 	DWORD szObjectIDLastRead;
 	int LocalTime;
+	DWORD listedCount;
 } tLastFindStuct,*pLastFindStuct;
 
 BOOL initialized=FALSE;
@@ -120,6 +131,83 @@ DWORD StoredNumIds=0;
 
 HANDLE hDevNotify=NULL;
 HWND hWndNotify=NULL;
+
+void LockPlugin(void)
+{
+	EnterCriticalSection(&g_cs);
+}
+
+void UnlockPlugin(void)
+{
+	LeaveCriticalSection(&g_cs);
+}
+
+BOOL EnsureComApartment(void)
+{
+	HRESULT hr=CoInitialize(NULL);
+	return (hr==S_OK || hr==S_FALSE);
+}
+
+void SetCancelDevice(IPortableDevice* pDevice)
+{
+	g_cancelDevice=pDevice;
+}
+
+IPortableDevice* FindStoredDeviceByPath(LPCWSTR path)
+{
+	if (!path || path[0]==0)
+		return NULL;
+	WCHAR name[MAX_PATH];
+	const WCHAR* p=path;
+	if (p[0]=='\\')
+		p++;
+	wcslcpy(name,p,MAX_PATH-1);
+	WCHAR* slash=wcschr(name,'\\');
+	if (slash)
+		slash[0]=0;
+	for (DWORD i=0;i<StoredNumIds;i++) {
+		if (StoredPnPFriendlyNames[i] && wcscmp(StoredPnPFriendlyNames[i],name)==0)
+			return StoredDevices[i];
+	}
+	return NULL;
+}
+
+void RequestAbort(void)
+{
+	InterlockedExchange(&g_abort,1);
+	if (g_cancelDevice)
+		g_cancelDevice->Cancel();
+}
+
+void ResetAbort(void)
+{
+	InterlockedExchange(&g_abort,0);
+}
+
+BOOL IsAbortRequested(void)
+{
+	return InterlockedCompareExchange(&g_abort,0,0)!=0;
+}
+
+void SetContentStop(BOOL stop)
+{
+	InterlockedExchange(&g_contentStop, stop ? 1 : 0);
+}
+
+BOOL IsContentStop(void)
+{
+	return InterlockedCompareExchange(&g_contentStop,0,0)!=0;
+}
+
+int ProgressCheck(WCHAR* src, WCHAR* dst, int percent)
+{
+	LeaveCriticalSection(&g_cs);
+	int err=ProgressProcT(PluginNumber,src,dst,percent);
+	EnterCriticalSection(&g_cs);
+	if (err)
+		RequestAbort();
+	return err;
+}
 
 static BOOL IsWpdFolderContentType(REFGUID contentType)
 {
@@ -952,6 +1040,12 @@ void PopulateFindDataW(PWSTR szObject,pLastFindStuct lf,WIN32_FIND_DATAW *FindDa
 						FindData->nFileSizeLow=(DWORD)(sz);
 					}
 				}
+				BOOL hidden=FALSE;
+				if (SUCCEEDED(pObjectProperties->GetBoolValue(WPD_OBJECT_ISHIDDEN,&hidden)) && hidden)
+					FindData->dwFileAttributes|=FILE_ATTRIBUTE_HIDDEN;
+				BOOL systemFile=FALSE;
+				if (SUCCEEDED(pObjectProperties->GetBoolValue(WPD_OBJECT_ISSYSTEM,&systemFile)) && systemFile)
+					FindData->dwFileAttributes|=FILE_ATTRIBUTE_SYSTEM;
 
 				PROPVARIANT pr;
 				/*if (fieldTypesChanged) {
@@ -1032,12 +1126,14 @@ HANDLE __stdcall FsFindFirstW(WCHAR* Path,WIN32_FIND_DATAW *FindData)
 {
 	pLastFindStuct lf;
 	WCHAR wcSearch[wdirtypemax];
-	
+
+	EnsureComApartment();
 	memset(FindData,0,sizeof(WIN32_FIND_DATAW));
 	wcslcpy(wcSearch,Path,wdirtypemax-1);           // incl. Backslash!
 	wcslcatbackslash(wcSearch,wdirtypemax-1);
 	
 	if (Path[0]=='\\') {
+		LockPlugin();
 		if (DeviceEventReceived || Path[1]==0) {  // reload all devices in plugin root, or when receiving insert/remove notification
 			DeviceEventReceived=false;
 			FreeAllDevices();
@@ -1045,10 +1141,12 @@ HANDLE __stdcall FsFindFirstW(WCHAR* Path,WIN32_FIND_DATAW *FindData)
 		}
 
 		if (!InitFunctionsIfNeeded(TRUE)) {
+			UnlockPlugin();
 			SetLastError(ERROR_FILE_NOT_FOUND);
 			return INVALID_HANDLE_VALUE;
 		}
 		if (StoredNumIds==0) {
+			UnlockPlugin();
 			SetLastError(ERROR_NO_MORE_FILES);
 			return INVALID_HANDLE_VALUE;
 		}
@@ -1072,6 +1170,7 @@ HANDLE __stdcall FsFindFirstW(WCHAR* Path,WIN32_FIND_DATAW *FindData)
 				lf->pPnpDeviceLastRead=0;
 				lf->pEnumObjectIDs=NULL;
 				lf->pProperties=NULL;
+				UnlockPlugin();
 				return (HANDLE)lf;
 			}
 		} else {
@@ -1079,6 +1178,7 @@ HANDLE __stdcall FsFindFirstW(WCHAR* Path,WIN32_FIND_DATAW *FindData)
 			IPortableDeviceProperties* pProperties;
 			HRESULT hr = GetFolderIDFromPathName(wcSearch,&pEnumObjectIDs,&pProperties,NULL,NULL);
 			if (!SUCCEEDED(hr)) {
+				UnlockPlugin();
 				SetLastError(ERROR_FILE_NOT_FOUND);
 				return INVALID_HANDLE_VALUE;
 			}
@@ -1092,6 +1192,7 @@ HANDLE __stdcall FsFindFirstW(WCHAR* Path,WIN32_FIND_DATAW *FindData)
 				free(lf);
 				pEnumObjectIDs->Release();
 				pProperties->Release();
+				UnlockPlugin();
 				SetLastError(ERROR_NO_MORE_FILES);
 				LogProc(PluginNumber,MSGTYPE_OPERATIONCOMPLETE,"Directory is empty!");
 				return INVALID_HANDLE_VALUE;
@@ -1117,12 +1218,16 @@ HANDLE __stdcall FsFindFirstW(WCHAR* Path,WIN32_FIND_DATAW *FindData)
 				lf->pPropertiesToRead->Add(WPD_OBJECT_DATE_MODIFIED);
 				lf->pPropertiesToRead->Add(WPD_OBJECT_DATE_CREATED);  // for devices like some cameras which don't have the modified date
 				lf->pPropertiesToRead->Add(WPD_OBJECT_CONTENT_TYPE);
-				//lf->pPropertiesToRead->Add(WPD_OBJECT_FORMAT);
+				lf->pPropertiesToRead->Add(WPD_OBJECT_ISHIDDEN);
+				lf->pPropertiesToRead->Add(WPD_OBJECT_ISSYSTEM);
 			} else
 				lf->pPropertiesToRead=NULL;
 
 			lf->LocalTime=UseLocalTime(Path);
 			PopulateFindDataW(lf->szObjectIDArray[0],lf,FindData,lf->LocalTime);
+			lf->listedCount=1;
+			UnlockPlugin();
+			ProgressProcT(PluginNumber,lf->Path,FindData->cFileName,0);
 			return (HANDLE)lf;
 		}
 	}
@@ -1147,8 +1252,11 @@ BOOL __stdcall FsFindNextW(HANDLE Hdl,WIN32_FIND_DATAW *FindData)
 
 	if (Hdl==(HANDLE)1)
 		return false;
+	if (IsAbortRequested())
+		return false;
 
 	lf=(pLastFindStuct)Hdl;
+	LockPlugin();
 	if (lf->pEnumObjectIDs==NULL && StoredPnpDeviceIDs) {
 		if (lf->pPnpDeviceLastRead+1<StoredNumIds) {
 			lf->pPnpDeviceLastRead++;
@@ -1158,6 +1266,7 @@ BOOL __stdcall FsFindNextW(HANDLE Hdl,WIN32_FIND_DATAW *FindData)
 			FindData->ftLastWriteTime.dwLowDateTime=0xFFFFFFFE;
 			FindData->nFileSizeHigh=0;
 			FindData->nFileSizeLow=0;
+			UnlockPlugin();
 			return true;
 		}
 	} else if (lf->pEnumObjectIDs) {
@@ -1183,12 +1292,21 @@ BOOL __stdcall FsFindNextW(HANDLE Hdl,WIN32_FIND_DATAW *FindData)
 				lf->pEnumObjectIDs=NULL;
 				lf->pProperties->Release();
 				lf->pProperties=NULL;
+				UnlockPlugin();
 				return false;
 			}
 		}
 		PopulateFindDataW(lf->szObjectIDArray[lf->szObjectIDLastRead],lf,FindData,lf->LocalTime);
+		lf->listedCount++;
+		DWORD n=lf->listedCount;
+		UnlockPlugin();
+		if ((n%16)==0) {
+			if (ProgressProcT(PluginNumber,lf->Path,FindData->cFileName,(int)(n%99)))
+				return false;
+		}
 		return true;
 	}
+	UnlockPlugin();
 	return false;
 }
 
@@ -1762,13 +1880,17 @@ int __stdcall FsGetFileW(WCHAR* RemoteName,WCHAR* LocalName,int CopyFlags,Remote
 	if (!InitFunctionsIfNeeded(TRUE))
 		return FS_FILE_READERROR;
 
+	EnsureComApartment();
 	WCHAR WLocalName[wdirtypemax];
 	WCHAR WRemoteName[wdirtypemax];
 	wcslcpy(WLocalName,LocalName,wdirtypemax-1);
 	wcslcpy(WRemoteName,RemoteName,wdirtypemax-1);
 	LPWSTR pItemStorageID=NULL;
 	IPortableDeviceContent* pDeviceContent=NULL;
+	LockPlugin();
+	InterlockedExchange(&g_abort,0);
 	HRESULT hr = GetFolderIDFromPathName(WRemoteName,NULL,NULL,&pDeviceContent,&pItemStorageID);
+	SetCancelDevice(FindStoredDeviceByPath(WRemoteName));
 	ULONGLONG totalsize=0;
 	ULONGLONG totalcopied=0;
 	if (ri) {
@@ -1810,7 +1932,7 @@ int __stdcall FsGetFileW(WCHAR* RemoteName,WCHAR* LocalName,int CopyFlags,Remote
 							if (totalsize && abs((int)thistime-(int)lasttime)>100) {
 								int percent=(int)((totalcopied*100)/totalsize);
 								lasttime=thistime;
-								err=ProgressProcT(PluginNumber,NULL,NULL,percent);
+								err=ProgressCheck(NULL,NULL,percent);
 								if (err) {
 									result=FS_FILE_USERABORT;
 									break;
@@ -1845,6 +1967,8 @@ int __stdcall FsGetFileW(WCHAR* RemoteName,WCHAR* LocalName,int CopyFlags,Remote
 		CoTaskMemFree(pItemStorageID);
 	if (pDeviceContent)
 		pDeviceContent->Release();
+	SetCancelDevice(NULL);
+	UnlockPlugin();
 	return result;
 }
 
@@ -1964,10 +2088,14 @@ int __stdcall FsPutFileW(WCHAR* LocalName,WCHAR* RemoteName,int CopyFlags)
 	if (!InitFunctionsIfNeeded(TRUE))
 		return FS_FILE_READERROR;
 
+	EnsureComApartment();
 	WCHAR WLocalName[wdirtypemax],*p;
 	WCHAR WRemoteName[wdirtypemax];
 	wcslcpy(WLocalName,LocalName,wdirtypemax);
 	wcslcpy(WRemoteName,RemoteName,wdirtypemax);
+	LockPlugin();
+	InterlockedExchange(&g_abort,0);
+	SetCancelDevice(FindStoredDeviceByPath(RemoteName));
 	p=wcsrchr(WRemoteName,'\\');
 	int result=FS_FILE_READERROR;
 	ULONGLONG totalsize=0;
@@ -2123,7 +2251,7 @@ int __stdcall FsPutFileW(WCHAR* LocalName,WCHAR* RemoteName,int CopyFlags)
 											if (totalsize && abs((int)thistime-(int)lasttime)>100) {
 												int percent=(int)((totalcopied*100)/totalsize);
 												lasttime=thistime;
-												err=ProgressProcT(PluginNumber,NULL,NULL,percent);
+												err=ProgressCheck(NULL,NULL,percent);
 												if (err) {
 													result=FS_FILE_USERABORT;
 													break;
@@ -2367,6 +2495,8 @@ int __stdcall FsPutFileW(WCHAR* LocalName,WCHAR* RemoteName,int CopyFlags)
 				pProperties->Release();
 		}
 	}
+	SetCancelDevice(NULL);
+	UnlockPlugin();
 	return result;
 }
 
@@ -2405,18 +2535,6 @@ int __stdcall FsExecuteFileW(HWND MainWin,WCHAR* RemoteName,WCHAR* Verb)
 void __stdcall FsGetDefRootName(char* DefRootName,int maxlen)
 {
 	strlcpy(DefRootName,DefPluginTitle,maxlen);
-}
-
-// Currently these are only used to unload GDI+
-
-int __stdcall FsContentGetSupportedField(int FieldIndex,char* FieldName,char* Units,int maxlen)
-{
-	return ft_nomorefields;
-}
-
-int __stdcall FsContentGetValue(TCHAR* FileName,int FieldIndex,int UnitIndex,void* FieldValue,int maxlen,int flags)
-{
-	return ft_nosuchfield;
 }
 
 void __stdcall FsContentPluginUnloading(void)

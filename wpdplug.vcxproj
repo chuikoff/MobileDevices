@@ -173,6 +173,7 @@
   <ItemGroup>
     <ClCompile Include="connectionsettings.cpp" />
     <ClCompile Include="cunicode.cpp" />
+    <ClCompile Include="extra.cpp" />
     <ClCompile Include="utils.cpp" />
     <ClCompile Include="wpdplug.cpp" />
   </ItemGroup>
@@ -184,6 +185,7 @@
     <ClInclude Include="stdafx.h" />
     <ClInclude Include="utils.h" />
     <ClInclude Include="wpdplug.h" />
+    <ClInclude Include="wpdplug_int.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="LICENSE.txt" />

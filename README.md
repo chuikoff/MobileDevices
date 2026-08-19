@@ -6,6 +6,7 @@ This is a modified version of Christian Ghisler’s *Windows Media Audio 2* (`wp
 
 - Shows up in Network Neighborhood as **MTP Devices**
 - Files: `mtpdevices.wfx` (32-bit) and `mtpdevices.wfx64` (64-bit)
+- Version 1.5: background copy, custom columns, thumbnails, cancel
 - License: [BSD-3-Clause](LICENSE.txt)
 
 ## Install
