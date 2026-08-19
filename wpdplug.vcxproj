@@ -180,6 +180,7 @@
     </Manifest>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="apple_md.cpp" />
     <ClCompile Include="connectionsettings.cpp" />
     <ClCompile Include="cunicode.cpp" />
     <ClCompile Include="extra.cpp" />
@@ -188,6 +189,7 @@
     <ClCompile Include="wpdplug.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="apple_md.h" />
     <ClInclude Include="connectionsettings.h" />
     <ClInclude Include="cunicode.h" />
     <ClInclude Include="fsplugin.h" />

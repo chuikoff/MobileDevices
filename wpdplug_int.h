@@ -38,6 +38,7 @@ PWSTR FindPnpIdByPath(LPCWSTR path);
 
 #define DEVICE_INFO_MAX_STOR 8
 typedef struct {
+	WCHAR os[40];
 	WCHAR manufacturer[128];
 	WCHAR model[128];
 	WCHAR firmware[128];

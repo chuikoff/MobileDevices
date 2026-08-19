@@ -12,6 +12,7 @@
 #include "fsplugin.h"
 #include "wpdplug_int.h"
 #include "connectionsettings.h"
+#include "apple_md.h"
 
 #pragma comment(lib, "setupapi.lib")
 #pragma comment(lib, "cfgmgr32.lib")
@@ -72,6 +73,17 @@ void UnadviseWpdDevice(IPortableDevice* dev, LPWSTR cookie)
 		CoTaskMemFree(cookie);
 }
 
+static BOOL ContainsAny(LPCWSTR hay, const WCHAR** needles, int n)
+{
+	if (!hay)
+		return FALSE;
+	for (int i=0;i<n;i++) {
+		if (StrStrIW(hay, needles[i]))
+			return TRUE;
+	}
+	return FALSE;
+}
+
 BOOL ShouldHideWpdDevice(IPortableDeviceManager* mgr, LPCWSTR pnpId, LPCWSTR friendly)
 {
 	static const WCHAR* junk[]={
@@ -79,19 +91,31 @@ BOOL ShouldHideWpdDevice(IPortableDeviceManager* mgr, LPCWSTR pnpId, LPCWSTR fri
 		L"WIA", L"Scanner", L"Printer", L"Fax", L"SIDESHOW",
 		L"SideShow", L"Microsoft XPS"
 	};
+	static const WCHAR* apple[]={
+		L"Apple", L"iPhone", L"iPad", L"iPod", L"VID_05AC"
+	};
+	static const WCHAR* androidHint[]={
+		L"Android", L"Google", L"Pixel", L"Samsung", L"Galaxy", L"Xiaomi", L"Redmi",
+		L"POCO", L"HUAWEI", L"Honor", L"OnePlus", L"OPPO", L"vivo", L"Realme",
+		L"Motorola", L"Sony", L"ASUS", L"ZTE", L"Nokia", L"Nothing", L"Fairphone",
+		L"VID_18D1", L"VID_04E8", L"VID_22B8", L"VID_0BB4", L"VID_12D1", L"VID_2717",
+		L"VID_2A70", L"VID_0FCE", L"VID_0E8D", L"VID_05C6", L"VID_0B05", L"VID_2A45",
+		L"VID_22D9", L"VID_19D2"
+	};
 	WCHAR desc[256]=L"";
 	DWORD dlen=256;
 	if (mgr && pnpId)
 		mgr->GetDeviceDescription((LPWSTR)pnpId, desc, &dlen);
-	for (int i=0;i<(int)(sizeof(junk)/sizeof(junk[0]));i++) {
-		if (friendly && StrStrIW(friendly, junk[i]))
-			return TRUE;
-		if (desc[0] && StrStrIW(desc, junk[i]))
-			return TRUE;
-		if (pnpId && StrStrIW(pnpId, junk[i]))
-			return TRUE;
-	}
-	return FALSE;
+	if (ContainsAny(friendly, junk, (int)(sizeof(junk)/sizeof(junk[0]))) ||
+		ContainsAny(desc, junk, (int)(sizeof(junk)/sizeof(junk[0]))) ||
+		ContainsAny(pnpId, junk, (int)(sizeof(junk)/sizeof(junk[0]))))
+		return TRUE;
+	if (ContainsAny(friendly, apple, 5) || ContainsAny(desc, apple, 5) || ContainsAny(pnpId, apple, 5))
+		return TRUE;
+	int nh=(int)(sizeof(androidHint)/sizeof(androidHint[0]));
+	if (ContainsAny(friendly, androidHint, nh) || ContainsAny(desc, androidHint, nh) || ContainsAny(pnpId, androidHint, nh))
+		return FALSE;
+	return TRUE;
 }
 
 static BOOL PnpIdToInstanceId(LPCWSTR pnp, WCHAR* inst, DWORD instcch)
@@ -185,6 +209,17 @@ BOOL QueryDeviceInfo(LPCWSTR remoteName, PluginDeviceInfo* info)
 	if (!remoteName || remoteName[0]==0)
 		return FALSE;
 
+	{
+		WCHAR dev[MAX_PATH];
+		const WCHAR* p=remoteName;
+		if (p[0]=='\\') p++;
+		wcslcpy(dev, p, MAX_PATH);
+		WCHAR* sl=wcschr(dev, '\\');
+		if (sl) sl[0]=0;
+		if (AppleMdIsDeviceName(dev))
+			return AppleMdFillInfo(dev, info);
+	}
+
 	EnsureComApartment();
 	if (!InitFunctionsIfNeeded(TRUE))
 		return FALSE;
@@ -231,7 +266,12 @@ BOOL QueryDeviceInfo(LPCWSTR remoteName, PluginDeviceInfo* info)
 			if (!info->model[0])
 				CopyWpdString(v, WPD_DEVICE_FRIENDLY_NAME, info->model, 128);
 			CopyWpdString(v, WPD_DEVICE_FIRMWARE_VERSION, info->firmware, 128);
+			if (!info->firmware[0] || !_wcsicmp(info->firmware, L"1.0") ||
+				!_wcsicmp(info->firmware, L"1.00") || !_wcsicmp(info->firmware, L"1.1") ||
+				StrStrIW(info->firmware, L"MTP"))
+				info->firmware[0]=0;
 			CopyWpdString(v, WPD_DEVICE_PROTOCOL, info->protocol, 80);
+			wcslcpy(info->os, L"Android", 40);
 			info->battery=ReadBatteryPercent(v);
 			v->Release();
 		}
@@ -308,6 +348,10 @@ void FormatDeviceInfo(int lang, const PluginDeviceInfo* info, WCHAR* out, int ou
 	WCHAR line[256];
 	const WCHAR* na=ru ? L"н/д" : L"n/a";
 
+	if (info->os[0]) {
+		swprintf_s(line, ru ? L"ОС: %s\r\n" : L"OS: %s\r\n", info->os);
+		wcslcat(out, line, outcch);
+	}
 	swprintf_s(line, ru ? L"Модель: %s\r\n" : L"Model: %s\r\n",
 		info->model[0] ? info->model : na);
 	wcslcat(out, line, outcch);

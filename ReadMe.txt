@@ -1,4 +1,4 @@
-MTP Devices plugin v2.0.3
+MTP Devices plugin v2.1.0
 =======================
 Modified from Windows Media Audio 2 (wpdplug) by Christian Ghisler.
 
@@ -38,6 +38,10 @@ read; new settings are stored under [MTPDevices].
 
 History
 =======
+20260819 Release v2.1.0
+20260819 Added: iPhone photos via Apple Mobile Device (Microsoft Store Apple Devices), not MTP
+20260819 Changed: plugin root shows only Android (MTP) and iPhone/iPad (Apple driver)
+20260819 Fixed: dummy MTP "1.0" no longer shown as Android firmware
 20260819 Release v2.0.3
 20260819 Added: Alt+Enter and quote info show model, firmware, battery and storage space (Android MTP)
 20260819 Release v2.0.2

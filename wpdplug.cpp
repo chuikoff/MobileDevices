@@ -13,6 +13,7 @@
 #include "utils.h"
 #include "connectionsettings.h"
 #include "wpdplug_int.h"
+#include "apple_md.h"
 
 #define DefPluginTitle PLUGIN_DISPLAY_NAME
 
@@ -124,6 +125,8 @@ typedef struct {
 	DWORD szObjectIDLastRead;
 	int LocalTime;
 	DWORD listedCount;
+	int listKind;
+	HANDLE appleFind;
 } tLastFindStuct,*pLastFindStuct;
 
 BOOL initialized=FALSE;
@@ -405,10 +408,10 @@ BOOL InitFunctionsIfNeeded(BOOL trueconnect)
 		}
 	} else
 		result=true;
-	if (result && pDevMgr && StoredNumIds==0) {
-		return LoadAllDevices();
-	} else
-		return true;
+	AppleMdInit();
+	if (result && pDevMgr && StoredNumIds==0)
+		LoadAllDevices();
+	return (result && StoredNumIds>0) || AppleMdCount()>0 || result;
 }
 
 // From: http://blogs.msdn.com/b/wpdblog/archive/2007/03/17/how-to-receive-wpd-device-arrival-events.aspx
@@ -1358,35 +1361,54 @@ HANDLE __stdcall FsFindFirstW(WCHAR* Path,WIN32_FIND_DATAW *FindData)
 			SetLastError(ERROR_FILE_NOT_FOUND);
 			return INVALID_HANDLE_VALUE;
 		}
-		if (StoredNumIds==0) {
-			UnlockPlugin();
-			SetLastError(ERROR_NO_MORE_FILES);
-			return INVALID_HANDLE_VALUE;
-		}
 
-		if (Path[1]==0) {  // Enum just the devices 
-			DWORD numids=0;
-			HRESULT hr=0;
-			PWSTR* pPnpDeviceIDs;
-			numids=StoredNumIds;
-			pPnpDeviceIDs=StoredPnpDeviceIDs;
-			if (numids>0) {
+		if (Path[1]==0) {  // Enum just the devices
+			DWORD total=StoredNumIds+(DWORD)AppleMdCount();
+			if (total==0) {
+				UnlockPlugin();
+				SetLastError(ERROR_NO_MORE_FILES);
+				return INVALID_HANDLE_VALUE;
+			}
+			memset(FindData,0,sizeof(*FindData));
+			FindData->dwFileAttributes=FILE_ATTRIBUTE_DIRECTORY;
+			FindData->ftLastWriteTime.dwHighDateTime=0xFFFFFFFF;
+			FindData->ftLastWriteTime.dwLowDateTime=0xFFFFFFFE;
+			if (StoredNumIds>0)
 				wcslcpy(FindData->cFileName,StoredPnPFriendlyNames[0],MAX_PATH-2);
-				FindData->dwFileAttributes=FILE_ATTRIBUTE_DIRECTORY;
-				FindData->ftLastWriteTime.dwHighDateTime=0xFFFFFFFF;
-				FindData->ftLastWriteTime.dwLowDateTime=0xFFFFFFFE;
-				FindData->nFileSizeHigh=0;
-				FindData->nFileSizeLow=0;
+			else
+				AppleMdGetName(0, FindData->cFileName, MAX_PATH-2);
+			lf=(pLastFindStuct)malloc(sizeof(tLastFindStuct));
+			memset(lf,0,sizeof(tLastFindStuct));
+			wcslcpy(lf->Path,wcSearch,wdirtypemax-1);
+			lf->pPnpDeviceLastRead=0;
+			lf->listKind=0;
+			UnlockPlugin();
+			return (HANDLE)lf;
+		} else {
+			WCHAR devName[MAX_PATH];
+			const WCHAR* pth=Path[0]=='\\' ? Path+1 : Path;
+			wcslcpy(devName, pth, MAX_PATH-1);
+			WCHAR* sl=wcschr(devName, '\\');
+			WCHAR rel[wdirtypemax]=L"";
+			if (sl) {
+				sl[0]=0;
+				wcslcpy(rel, sl+1, wdirtypemax-1);
+				wcutlastbackslash(rel);
+			}
+			if (AppleMdIsDeviceName(devName)) {
+				HANDLE ah=INVALID_HANDLE_VALUE;
+				UnlockPlugin();
+				if (!AppleMdFindFirst(devName, rel, FindData, &ah)) {
+					SetLastError(ERROR_NO_MORE_FILES);
+					return INVALID_HANDLE_VALUE;
+				}
 				lf=(pLastFindStuct)malloc(sizeof(tLastFindStuct));
 				memset(lf,0,sizeof(tLastFindStuct));
-				wcslcpy(lf->Path,wcSearch,wdirtypemax-1);
-				lf->pPnpDeviceLastRead=0;
-				lf->pEnumObjectIDs=NULL;
-				lf->pProperties=NULL;
-				UnlockPlugin();
+				wcslcpy(lf->Path, wcSearch, wdirtypemax-1);
+				lf->listKind=2;
+				lf->appleFind=ah;
 				return (HANDLE)lf;
 			}
-		} else {
 			IEnumPortableDeviceObjectIDs* pEnumObjectIDs;
 			IPortableDeviceProperties* pProperties;
 			HRESULT hr = GetFolderIDFromPathName(wcSearch,&pEnumObjectIDs,&pProperties,NULL,NULL);
@@ -1398,6 +1420,7 @@ HANDLE __stdcall FsFindFirstW(WCHAR* Path,WIN32_FIND_DATAW *FindData)
 			lf=(pLastFindStuct)malloc(sizeof(tLastFindStuct));
 			memset(lf,0,sizeof(tLastFindStuct));
 			wcslcpy(lf->Path,wcSearch,wdirtypemax-1);
+			lf->listKind=1;
 			lf->szObjectIDsFetched=0;
 			lf->szObjectIDLastRead=0;
 			hr = pEnumObjectIDs->Next(NUM_OBJECTS_TO_REQUEST,lf->szObjectIDArray,&lf->szObjectIDsFetched);
@@ -1470,16 +1493,23 @@ BOOL __stdcall FsFindNextW(HANDLE Hdl,WIN32_FIND_DATAW *FindData)
 		return false;
 
 	lf=(pLastFindStuct)Hdl;
+	if (lf->listKind==2) {
+		return AppleMdFindNext(lf->appleFind, FindData);
+	}
 	LockPlugin();
-	if (lf->pEnumObjectIDs==NULL && StoredPnpDeviceIDs) {
-		if (lf->pPnpDeviceLastRead+1<StoredNumIds) {
+	if (lf->listKind==0) {
+		DWORD total=StoredNumIds+(DWORD)AppleMdCount();
+		if (lf->pPnpDeviceLastRead+1<total) {
 			lf->pPnpDeviceLastRead++;
-			wcslcpy(FindData->cFileName,StoredPnPFriendlyNames[lf->pPnpDeviceLastRead],MAX_PATH-2);
+			DWORD idx=lf->pPnpDeviceLastRead;
+			memset(FindData,0,sizeof(*FindData));
 			FindData->dwFileAttributes=FILE_ATTRIBUTE_DIRECTORY;
 			FindData->ftLastWriteTime.dwHighDateTime=0xFFFFFFFF;
 			FindData->ftLastWriteTime.dwLowDateTime=0xFFFFFFFE;
-			FindData->nFileSizeHigh=0;
-			FindData->nFileSizeLow=0;
+			if (idx<StoredNumIds)
+				wcslcpy(FindData->cFileName,StoredPnPFriendlyNames[idx],MAX_PATH-2);
+			else
+				AppleMdGetName((int)(idx-StoredNumIds), FindData->cFileName, MAX_PATH-2);
 			UnlockPlugin();
 			return true;
 		}
@@ -1532,6 +1562,10 @@ int __stdcall FsFindClose(HANDLE Hdl)
 		return 0;
 	pLastFindStuct lf;
 	lf=(pLastFindStuct)Hdl;
+	if (lf->listKind==2 && lf->appleFind) {
+		AppleMdFindClose(lf->appleFind);
+		lf->appleFind=NULL;
+	}
 	if (lf->pEnumObjectIDs) {
 		lf->pEnumObjectIDs->Release();
 		lf->pEnumObjectIDs=NULL;
@@ -2107,6 +2141,26 @@ int __stdcall FsGetFileW(WCHAR* RemoteName,WCHAR* LocalName,int CopyFlags,Remote
 	WCHAR WRemoteName[wdirtypemax];
 	wcslcpy(WLocalName,LocalName,wdirtypemax-1);
 	wcslcpy(WRemoteName,RemoteName,wdirtypemax-1);
+	{
+		WCHAR dev[MAX_PATH];
+		const WCHAR* rp=WRemoteName[0]=='\\' ? WRemoteName+1 : WRemoteName;
+		wcslcpy(dev, rp, MAX_PATH-1);
+		WCHAR* sl=wcschr(dev, '\\');
+		WCHAR rel[wdirtypemax]=L"";
+		if (sl) {
+			sl[0]=0;
+			wcslcpy(rel, sl+1, wdirtypemax-1);
+		}
+		if (AppleMdIsDeviceName(dev)) {
+			FILETIME* mt=NULL;
+			if (ri && !(ri->LastWriteTime.dwHighDateTime==0xFFFFFFFF))
+				mt=&ri->LastWriteTime;
+			ULONGLONG sz=0;
+			if (ri)
+				sz=((ULONGLONG)ri->SizeHigh<<32)+ri->SizeLow;
+			return AppleMdGetFile(dev, rel, WLocalName, sz, mt);
+		}
+	}
 	LPWSTR pItemStorageID=NULL;
 	IPortableDeviceContent* pDeviceContent=NULL;
 	LockPlugin();
@@ -2811,6 +2865,7 @@ void __stdcall FsGetDefRootName(char* DefRootName,int maxlen)
 void __stdcall FsContentPluginUnloading(void)
 {
 	ShutdownGdiPlus();
+	AppleMdShutdown();
 	DisConnectIfNeeded();
 	if (weInitializedCOM) {
 		CoUninitialize();
