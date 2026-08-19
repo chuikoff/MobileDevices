@@ -1,4 +1,4 @@
-MTP Devices plugin v1.5
+MTP Devices plugin v2.0
 =======================
 Modified from Windows Media Audio 2 (wpdplug) by Christian Ghisler.
 
@@ -27,11 +27,24 @@ Usage:
 ======
 The plugin shows up in Network Neighborhood as "MTP Devices".
 
+Command line (current plugin path):
+  quote refresh     rescan devices
+  quote eject       safely remove the current device
+  quote info        serial, battery, protocol, firmware
+  quote reconnect   same as refresh
+
 Existing MediaAudio2 timezone settings (Alt+Enter on the device) are still
 read; new settings are stored under [MTPDevices].
 
 History
 =======
+20260819 Release v2.0
+20260819 Added: Bulk property reads for faster folder listing
+20260819 Added: quote refresh / eject / info / reconnect
+20260819 Added: Filter out WPD pass-through, printers, scanners, Media Library Service
+20260819 Added: Object-change events invalidate the path cache
+20260819 Added: Metadata via Windows Property Store (no WMVCORE); HEIC/WebP/Opus/MKV/PDF and other types on upload
+20260819 Added: DPI-aware settings dialog (Segoe UI, visual styles)
 20260819 Release v1.5
 20260819 Added: Background F5/F6 transfers (FsGetBackgroundFlags) with a lock around WPD calls
 20260819 Added: Custom columns (Type, Title, Artist, Album, Duration, Bitrate, Width, Height, Free, Capacity, Serial, Battery)

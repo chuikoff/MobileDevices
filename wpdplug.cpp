@@ -6,7 +6,6 @@
 #include <stdio.h>
 #include <wchar.h>
 #include <Dbt.h>
-#include <wmsdkidl.h>
 #include <GdiPlus.h>
 #include "wpdplug.h"
 #include "cunicode.h"
@@ -33,6 +32,12 @@ tRequestProcW RequestProcW;
 int PluginNumber;
 BOOL connected=false;
 BOOL DeviceEventReceived=false;   // if true, we need to re-scan all devices
+volatile LONG g_cacheDirty=0;
+
+void MarkObjectCacheDirty(void)
+{
+	InterlockedExchange(&g_cacheDirty, 1);
+}
 
 #define NUM_OBJECTS_TO_REQUEST 128
 
@@ -114,6 +119,7 @@ typedef struct {
 	IPortableDeviceProperties* pProperties;
 	DWORD pPnpDeviceLastRead;
 	LPWSTR szObjectIDArray[NUM_OBJECTS_TO_REQUEST];
+	IPortableDeviceValues* szObjectValues[NUM_OBJECTS_TO_REQUEST];
 	DWORD szObjectIDsFetched;
 	DWORD szObjectIDLastRead;
 	int LocalTime;
@@ -127,7 +133,27 @@ IPortableDeviceManager* pDevMgr=NULL;
 PWSTR* StoredPnpDeviceIDs=NULL;   // keep them globally!
 PWSTR* StoredPnPFriendlyNames=NULL;
 IPortableDevice** StoredDevices=NULL;
+LPWSTR* StoredEventCookies=NULL;
 DWORD StoredNumIds=0;
+
+PWSTR FindPnpIdByPath(LPCWSTR path)
+{
+	if (!path)
+		return NULL;
+	WCHAR name[MAX_PATH];
+	const WCHAR* p=path;
+	if (p[0]=='\\')
+		p++;
+	wcslcpy(name,p,MAX_PATH-1);
+	WCHAR* slash=wcschr(name,'\\');
+	if (slash)
+		slash[0]=0;
+	for (DWORD i=0;i<StoredNumIds;i++) {
+		if (StoredPnPFriendlyNames[i] && wcscmp(StoredPnPFriendlyNames[i],name)==0)
+			return StoredPnpDeviceIDs[i];
+	}
+	return NULL;
+}
 
 HANDLE hDevNotify=NULL;
 HWND hWndNotify=NULL;
@@ -635,9 +661,11 @@ HRESULT GetFolderIDFromPathName(LPWSTR pPath,IEnumPortableDeviceObjectIDs** pEnu
 	}
 	if (pDevice==NULL) {
 		hr = OpenWpdDevice(DeviceID, &pDevice);
-		if (SUCCEEDED(hr))
+		if (SUCCEEDED(hr)) {
 			StoredDevices[DeviceIndex]=pDevice;
-		else
+			if (StoredEventCookies)
+				AdviseWpdDevice(pDevice, &StoredEventCookies[DeviceIndex]);
+		} else
 			return hr;
 	} else
 		hr=S_OK;
@@ -817,13 +845,15 @@ BOOL LoadAllDevices()
 		StoredPnPFriendlyNames = (PWSTR*)malloc(StoredNumIds*sizeof(LPWSTR));
 		int sz=StoredNumIds*sizeof(IPortableDevice*);
 		StoredDevices = (IPortableDevice**)malloc(sz);
-		if (!StoredPnpDeviceIDs || !StoredPnPFriendlyNames || !StoredDevices) {
+		StoredEventCookies = (LPWSTR*)malloc(StoredNumIds*sizeof(LPWSTR));
+		if (!StoredPnpDeviceIDs || !StoredPnPFriendlyNames || !StoredDevices || !StoredEventCookies) {
 			FreeDeviceList();
 			return false;
 		}
 		memset(StoredPnpDeviceIDs,0,StoredNumIds*sizeof(LPWSTR));
 		memset(StoredPnPFriendlyNames,0,StoredNumIds*sizeof(LPWSTR));
 		memset(StoredDevices,0,sz);
+		memset(StoredEventCookies,0,StoredNumIds*sizeof(LPWSTR));
 		hr = pDevMgr->GetDevices(StoredPnpDeviceIDs, &StoredNumIds);
 		if (FAILED(hr)) {
 			LogWpdError(L"GetDevices(list)", hr);
@@ -856,6 +886,28 @@ BOOL LoadAllDevices()
 			}
 			MakeFriendlyNameUnique(i);
 		}
+		DWORD keep=0;
+		for (DWORD i=0;i<StoredNumIds;i++) {
+			if (ShouldHideWpdDevice(pDevMgr, StoredPnpDeviceIDs[i], StoredPnPFriendlyNames[i])) {
+				CoTaskMemFree(StoredPnpDeviceIDs[i]);
+				CoTaskMemFree(StoredPnPFriendlyNames[i]);
+				StoredPnpDeviceIDs[i]=NULL;
+				StoredPnPFriendlyNames[i]=NULL;
+				continue;
+			}
+			if (keep!=i) {
+				StoredPnpDeviceIDs[keep]=StoredPnpDeviceIDs[i];
+				StoredPnPFriendlyNames[keep]=StoredPnPFriendlyNames[i];
+				StoredDevices[keep]=StoredDevices[i];
+				StoredEventCookies[keep]=StoredEventCookies[i];
+				StoredPnpDeviceIDs[i]=NULL;
+				StoredPnPFriendlyNames[i]=NULL;
+				StoredDevices[i]=NULL;
+				StoredEventCookies[i]=NULL;
+			}
+			keep++;
+		}
+		StoredNumIds=keep;
 	}
 	return true;
 }
@@ -974,6 +1026,137 @@ WCHAR* getNameFromPropertyKey(PROPERTYKEY* propkey,BOOL* unknownField) {
 }
 */
 
+static void ReleaseBatchValues(pLastFindStuct lf)
+{
+	if (!lf)
+		return;
+	for (DWORD i=0;i<NUM_OBJECTS_TO_REQUEST;i++) {
+		if (lf->szObjectValues[i]) {
+			lf->szObjectValues[i]->Release();
+			lf->szObjectValues[i]=NULL;
+		}
+	}
+}
+
+class CBulkCb : public IPortableDevicePropertiesBulkCallback
+{
+	LONG m_ref;
+	HANDLE m_done;
+	pLastFindStuct m_lf;
+	HRESULT m_hr;
+public:
+	CBulkCb(pLastFindStuct lf) : m_ref(1), m_lf(lf), m_hr(S_OK)
+	{
+		m_done=CreateEvent(NULL,TRUE,FALSE,NULL);
+	}
+	~CBulkCb()
+	{
+		if (m_done)
+			CloseHandle(m_done);
+	}
+	HRESULT WaitDone(DWORD ms)
+	{
+		if (!m_done)
+			return E_FAIL;
+		if (WaitForSingleObject(m_done,ms)!=WAIT_OBJECT_0)
+			return HRESULT_FROM_WIN32(ERROR_TIMEOUT);
+		return m_hr;
+	}
+	STDMETHODIMP QueryInterface(REFIID riid, void** ppv)
+	{
+		if (!ppv) return E_POINTER;
+		if (IsEqualIID(riid,IID_IUnknown) || IsEqualIID(riid,IID_IPortableDevicePropertiesBulkCallback)) {
+			*ppv=static_cast<IPortableDevicePropertiesBulkCallback*>(this);
+			AddRef();
+			return S_OK;
+		}
+		*ppv=NULL;
+		return E_NOINTERFACE;
+	}
+	STDMETHODIMP_(ULONG) AddRef() { return InterlockedIncrement(&m_ref); }
+	STDMETHODIMP_(ULONG) Release()
+	{
+		LONG r=InterlockedDecrement(&m_ref);
+		if (r==0)
+			delete this;
+		return r;
+	}
+	STDMETHODIMP OnStart(REFGUID) { return S_OK; }
+	STDMETHODIMP OnProgress(REFGUID, IPortableDeviceValuesCollection* col)
+	{
+		if (!col || !m_lf)
+			return S_OK;
+		DWORD n=0;
+		col->GetCount(&n);
+		for (DWORD i=0;i<n;i++) {
+			IPortableDeviceValues* v=NULL;
+			if (FAILED(col->GetAt(i,&v)) || !v)
+				continue;
+			LPWSTR id=NULL;
+			v->GetStringValue(WPD_OBJECT_ID,&id);
+			BOOL kept=FALSE;
+			if (id) {
+				for (DWORD k=0;k<m_lf->szObjectIDsFetched;k++) {
+					if (m_lf->szObjectIDArray[k] && wcscmp(m_lf->szObjectIDArray[k],id)==0) {
+						if (m_lf->szObjectValues[k])
+							m_lf->szObjectValues[k]->Release();
+						m_lf->szObjectValues[k]=v;
+						kept=TRUE;
+						break;
+					}
+				}
+				CoTaskMemFree(id);
+			}
+			if (!kept)
+				v->Release();
+		}
+		return S_OK;
+	}
+	STDMETHODIMP OnEnd(REFGUID, HRESULT hrStatus)
+	{
+		m_hr=hrStatus;
+		if (m_done)
+			SetEvent(m_done);
+		return S_OK;
+	}
+};
+
+static void PrefetchBatchValues(pLastFindStuct lf)
+{
+	ReleaseBatchValues(lf);
+	if (!lf || !lf->pProperties || !lf->pPropertiesToRead || lf->szObjectIDsFetched==0)
+		return;
+	IPortableDevicePropertiesBulk* bulk=NULL;
+	if (SUCCEEDED(lf->pProperties->QueryInterface(IID_IPortableDevicePropertiesBulk,(void**)&bulk)) && bulk) {
+		IPortableDevicePropVariantCollection* ids=NULL;
+		if (SUCCEEDED(CoCreateInstance(CLSID_PortableDevicePropVariantCollection,NULL,CLSCTX_INPROC_SERVER,
+			IID_IPortableDevicePropVariantCollection,(void**)&ids))) {
+			for (DWORD i=0;i<lf->szObjectIDsFetched;i++) {
+				PROPVARIANT pv;
+				PropVariantInit(&pv);
+				pv.vt=VT_LPWSTR;
+				pv.pwszVal=lf->szObjectIDArray[i];
+				ids->Add(&pv);
+				pv.vt=VT_EMPTY;
+				pv.pwszVal=NULL;
+			}
+			CBulkCb* cb=new CBulkCb(lf);
+			GUID ctx=GUID_NULL;
+			HRESULT hr=bulk->QueueGetValuesByObjectList(ids,lf->pPropertiesToRead,cb,&ctx);
+			if (SUCCEEDED(hr))
+				hr=bulk->Start(ctx);
+			if (SUCCEEDED(hr))
+				cb->WaitDone(20000);
+			cb->Release();
+			ids->Release();
+		}
+		bulk->Release();
+		return;
+	}
+	for (DWORD i=0;i<lf->szObjectIDsFetched;i++)
+		lf->pProperties->GetValues(lf->szObjectIDArray[i],lf->pPropertiesToRead,&lf->szObjectValues[i]);
+}
+
 void PopulateFindDataW(PWSTR szObject,pLastFindStuct lf,WIN32_FIND_DATAW *FindData,int LocalTime)
 {
 	__try {
@@ -1017,10 +1200,20 @@ void PopulateFindDataW(PWSTR szObject,pLastFindStuct lf,WIN32_FIND_DATAW *FindDa
 */
 		if (lf->pPropertiesToRead && lf->pProperties) {
 			IPortableDeviceValues* pObjectProperties=NULL;
-			HRESULT hr2=lf->pProperties->GetValues(szObject,
-							lf->pPropertiesToRead, //pkeys   // The properties we want to read
-							&pObjectProperties); // Driver supplied property values for the specified object
-			if (SUCCEEDED(hr2)) {
+			BOOL ownProps=TRUE;
+			HRESULT hr2=S_OK;
+			DWORD idx=lf->szObjectIDLastRead;
+			if (idx<lf->szObjectIDsFetched && lf->szObjectValues[idx] &&
+				lf->szObjectIDArray[idx] && szObject && wcscmp(lf->szObjectIDArray[idx],szObject)==0) {
+				pObjectProperties=lf->szObjectValues[idx];
+				ownProps=FALSE;
+				hr2=S_OK;
+			} else {
+				hr2=lf->pProperties->GetValues(szObject,
+							lf->pPropertiesToRead,
+							&pObjectProperties);
+			}
+			if (SUCCEEDED(hr2) && pObjectProperties) {
 				PWSTR pName=NULL;
 				pObjectProperties->GetStringValue(WPD_OBJECT_ORIGINAL_FILE_NAME,&pName);
 				if (pName==NULL || pName[0]==0)
@@ -1103,7 +1296,8 @@ void PopulateFindDataW(PWSTR szObject,pLastFindStuct lf,WIN32_FIND_DATAW *FindDa
 						FindData->ftLastWriteTime=pr.filetime;
 					}
 				}
-				pObjectProperties->Release();
+				if (ownProps)
+					pObjectProperties->Release();
 			}
 		}
 	} __except (true) {
@@ -1136,7 +1330,10 @@ HANDLE __stdcall FsFindFirstW(WCHAR* Path,WIN32_FIND_DATAW *FindData)
 		LockPlugin();
 		if (DeviceEventReceived || Path[1]==0) {  // reload all devices in plugin root, or when receiving insert/remove notification
 			DeviceEventReceived=false;
+			InterlockedExchange(&g_cacheDirty,0);
 			FreeAllDevices();
+			ClearCache();
+		} else if (InterlockedCompareExchange(&g_cacheDirty,0,1)) {
 			ClearCache();
 		}
 
@@ -1224,6 +1421,7 @@ HANDLE __stdcall FsFindFirstW(WCHAR* Path,WIN32_FIND_DATAW *FindData)
 				lf->pPropertiesToRead=NULL;
 
 			lf->LocalTime=UseLocalTime(Path);
+			PrefetchBatchValues(lf);
 			PopulateFindDataW(lf->szObjectIDArray[0],lf,FindData,lf->LocalTime);
 			lf->listedCount=1;
 			UnlockPlugin();
@@ -1280,6 +1478,7 @@ BOOL __stdcall FsFindNextW(HANDLE Hdl,WIN32_FIND_DATAW *FindData)
 			}
 			lf->szObjectIDsFetched=0;
 			lf->szObjectIDLastRead=0;
+			ReleaseBatchValues(lf);
 			hr = lf->pEnumObjectIDs->Next(NUM_OBJECTS_TO_REQUEST,lf->szObjectIDArray,&lf->szObjectIDsFetched);
 			if (!SUCCEEDED(hr) || lf->szObjectIDsFetched==0) {
 				SetLastError(ERROR_NO_MORE_FILES);
@@ -1295,6 +1494,7 @@ BOOL __stdcall FsFindNextW(HANDLE Hdl,WIN32_FIND_DATAW *FindData)
 				UnlockPlugin();
 				return false;
 			}
+			PrefetchBatchValues(lf);
 		}
 		PopulateFindDataW(lf->szObjectIDArray[lf->szObjectIDLastRead],lf,FindData,lf->LocalTime);
 		lf->listedCount++;
@@ -1333,6 +1533,7 @@ int __stdcall FsFindClose(HANDLE Hdl)
 			CoTaskMemFree(lf->szObjectIDArray[i]);
 		lf->szObjectIDArray[i]=NULL;
 	}
+	ReleaseBatchValues(lf);
 	lf->szObjectIDsFetched=0;
 	free(lf);
 	return 0;
@@ -1359,6 +1560,8 @@ int __stdcall FsInitW(int PluginNr,tProgressProcW pProgressProcW,tLogProcW pLogP
 void FreeDeviceList()
 {
 	for (DWORD i=0;i<StoredNumIds;i++) {
+		if (StoredDevices && StoredDevices[i] && StoredEventCookies)
+			UnadviseWpdDevice(StoredDevices[i], StoredEventCookies[i]);
 		if (StoredPnpDeviceIDs)
 			CoTaskMemFree(StoredPnpDeviceIDs[i]);
 		if (StoredPnPFriendlyNames)
@@ -1372,9 +1575,12 @@ void FreeDeviceList()
 		free(StoredPnPFriendlyNames);
 	if (StoredDevices)
 		free(StoredDevices);
+	if (StoredEventCookies)
+		free(StoredEventCookies);
 	StoredPnpDeviceIDs=NULL;
 	StoredPnPFriendlyNames=NULL;
 	StoredDevices=NULL;
+	StoredEventCookies=NULL;
 	StoredNumIds=0;
 	connected=false;
 }
@@ -2005,7 +2211,12 @@ static const ExtensionMap rgExtensionMap[] =
     { L"m4a",   &WPD_OBJECT_FORMAT_AAC, &WPD_CONTENT_TYPE_AUDIO },
 	{ L"ogg",   &WPD_OBJECT_FORMAT_OGG, &WPD_CONTENT_TYPE_AUDIO},
 	{ L"flac",   &WPD_OBJECT_FORMAT_FLAC, &WPD_CONTENT_TYPE_AUDIO},
+	{ L"opus",   &WPD_OBJECT_FORMAT_UNSPECIFIED, &WPD_CONTENT_TYPE_AUDIO},
 	{ L"mp4",   &WPD_OBJECT_FORMAT_MP4, &WPD_CONTENT_TYPE_VIDEO },
+	{ L"m4v",   &WPD_OBJECT_FORMAT_MP4, &WPD_CONTENT_TYPE_VIDEO },
+	{ L"mov",   &WPD_OBJECT_FORMAT_UNSPECIFIED, &WPD_CONTENT_TYPE_VIDEO },
+	{ L"mkv",   &WPD_OBJECT_FORMAT_UNSPECIFIED, &WPD_CONTENT_TYPE_VIDEO },
+	{ L"webm",  &WPD_OBJECT_FORMAT_UNSPECIFIED, &WPD_CONTENT_TYPE_VIDEO },
     { L"avi",   &WPD_OBJECT_FORMAT_AVI, &WPD_CONTENT_TYPE_VIDEO },
     { L"mpeg",  &WPD_OBJECT_FORMAT_MPEG, &WPD_CONTENT_TYPE_VIDEO },
     { L"mpg",   &WPD_OBJECT_FORMAT_MPEG, &WPD_CONTENT_TYPE_VIDEO },
@@ -2023,6 +2234,15 @@ static const ExtensionMap rgExtensionMap[] =
 	{ L"png",  	&WPD_OBJECT_FORMAT_PNG, &WPD_CONTENT_TYPE_IMAGE },
     { L"tif",  	&WPD_OBJECT_FORMAT_TIFF, &WPD_CONTENT_TYPE_IMAGE },
 	{ L"tiff",  	&WPD_OBJECT_FORMAT_TIFF, &WPD_CONTENT_TYPE_IMAGE },
+	{ L"webp",  &WPD_OBJECT_FORMAT_UNSPECIFIED, &WPD_CONTENT_TYPE_IMAGE },
+	{ L"heic",  &WPD_OBJECT_FORMAT_UNSPECIFIED, &WPD_CONTENT_TYPE_IMAGE },
+	{ L"heif",  &WPD_OBJECT_FORMAT_UNSPECIFIED, &WPD_CONTENT_TYPE_IMAGE },
+	{ L"avif",  &WPD_OBJECT_FORMAT_UNSPECIFIED, &WPD_CONTENT_TYPE_IMAGE },
+	{ L"dng",   &WPD_OBJECT_FORMAT_UNSPECIFIED, &WPD_CONTENT_TYPE_IMAGE },
+	{ L"cr2",   &WPD_OBJECT_FORMAT_UNSPECIFIED, &WPD_CONTENT_TYPE_IMAGE },
+	{ L"nef",   &WPD_OBJECT_FORMAT_UNSPECIFIED, &WPD_CONTENT_TYPE_IMAGE },
+	{ L"arw",   &WPD_OBJECT_FORMAT_UNSPECIFIED, &WPD_CONTENT_TYPE_IMAGE },
+	{ L"rw2",   &WPD_OBJECT_FORMAT_UNSPECIFIED, &WPD_CONTENT_TYPE_IMAGE },
 	{ L"mpl",   &WPD_OBJECT_FORMAT_MPLPLAYLIST, &WPD_CONTENT_TYPE_PLAYLIST},
 	{ L"asx",   &WPD_OBJECT_FORMAT_ASXPLAYLIST, &WPD_CONTENT_TYPE_PLAYLIST},
 	{ L"pls",   &WPD_OBJECT_FORMAT_PLSPLAYLIST, &WPD_CONTENT_TYPE_PLAYLIST},
@@ -2035,7 +2255,10 @@ static const ExtensionMap rgExtensionMap[] =
 	{ L"ppt",   &WPD_OBJECT_FORMAT_MICROSOFT_POWERPOINT, &WPD_CONTENT_TYPE_DOCUMENT},
 	{ L"pptx",   &WPD_OBJECT_FORMAT_MICROSOFT_POWERPOINT, &WPD_CONTENT_TYPE_DOCUMENT},
 	{ L"txt",   &WPD_OBJECT_FORMAT_UNSPECIFIED,&WPD_CONTENT_TYPE_DOCUMENT},
-	{ L"rtf",   &WPD_OBJECT_FORMAT_UNSPECIFIED,&WPD_CONTENT_TYPE_DOCUMENT}
+	{ L"rtf",   &WPD_OBJECT_FORMAT_UNSPECIFIED,&WPD_CONTENT_TYPE_DOCUMENT},
+	{ L"pdf",   &WPD_OBJECT_FORMAT_UNSPECIFIED,&WPD_CONTENT_TYPE_DOCUMENT},
+	{ L"epub",  &WPD_OBJECT_FORMAT_UNSPECIFIED,&WPD_CONTENT_TYPE_DOCUMENT},
+	{ L"apk",   &WPD_OBJECT_FORMAT_UNSPECIFIED,&WPD_CONTENT_TYPE_GENERIC_FILE}
 };
 
 void GetFormatCodeFromFile(WCHAR* pszFile,const GUID** pFormat,const GUID** pContent)
@@ -2147,7 +2370,7 @@ int __stdcall FsPutFileW(WCHAR* LocalName,WCHAR* RemoteName,int CopyFlags)
 							IStream* pStream=NULL;
 							CONST GUID* pFormat=NULL;
 							CONST GUID* pContent=NULL;
-							WM_PICTURE* pPreviewImage=NULL;
+							AlbumArtBlob* pPreviewImage=NULL;
 							GetFormatCodeFromFile(RemoteName,&pFormat,&pContent);
 							if (pFormat)
 								pValues->SetGuidValue(WPD_OBJECT_FORMAT,*pFormat);
@@ -2190,7 +2413,7 @@ int __stdcall FsPutFileW(WCHAR* LocalName,WCHAR* RemoteName,int CopyFlags)
 							pValues->SetValue(WPD_MEDIA_LAST_ACCESSED_TIME,&pv);
 							pValues->SetValue(WPD_OBJECT_DATE_AUTHORED,&pv);
 							
-							hr = GetMetaDataFromWMFSDK(WLocalName, pValues,pContent,&pPreviewImage);
+							hr = GetFileMetadata(WLocalName, pValues,pContent,&pPreviewImage);
 							if (!SUCCEEDED(hr)) {
 								pValues->SetStringValue(WPD_OBJECT_NAME,p);
 								if (pFormat!=&WPD_OBJECT_FORMAT_UNSPECIFIED) {
@@ -2280,13 +2503,13 @@ int __stdcall FsPutFileW(WCHAR* LocalName,WCHAR* RemoteName,int CopyFlags)
 								else {
 									HRESULT hr2=S_OK;
 									CONST GUID* imgtype=NULL;
-									if (_wcsicmp(pPreviewImage->pwszMIMEType,L"image/jpeg")==0) {
+									if (_wcsicmp(pPreviewImage->mime,L"image/jpeg")==0) {
 										imgtype=&WPD_OBJECT_FORMAT_JFIF;										
-									} else if (_wcsicmp(pPreviewImage->pwszMIMEType,L"image/png")==0) {
+									} else if (_wcsicmp(pPreviewImage->mime,L"image/png")==0) {
 										imgtype=&WPD_OBJECT_FORMAT_PNG;
-									} else if (_wcsicmp(pPreviewImage->pwszMIMEType,L"image/gif")==0) {
+									} else if (_wcsicmp(pPreviewImage->mime,L"image/gif")==0) {
 										imgtype=&WPD_OBJECT_FORMAT_GIF;
-									} else if (_wcsicmp(pPreviewImage->pwszMIMEType,L"image/bmp")==0) {
+									} else if (_wcsicmp(pPreviewImage->mime,L"image/bmp")==0) {
 										imgtype=&WPD_OBJECT_FORMAT_BMP;
 									} else
 										hr2=E_FAIL;
@@ -2342,11 +2565,11 @@ int __stdcall FsPutFileW(WCHAR* LocalName,WCHAR* RemoteName,int CopyFlags)
 									}											
 
 									if (preview) {
-										HANDLE DataHandle=GlobalAlloc(GMEM_MOVEABLE,pPreviewImage->dwDataLen);
+										HANDLE DataHandle=GlobalAlloc(GMEM_MOVEABLE,pPreviewImage->len);
 										if (DataHandle) {
 											IStream* fDataStream;
 											char* p=(char*)GlobalLock(DataHandle);
-											memcpy(p,pPreviewImage->pbData,pPreviewImage->dwDataLen);
+											memcpy(p,pPreviewImage->data,pPreviewImage->len);
 											GlobalUnlock(DataHandle);
 											if (SUCCEEDED(CreateStreamOnHGlobal(DataHandle,true,&fDataStream))) {  // now fStream = data
 												Gdiplus::GpImage* GdiplusImage;
@@ -2381,7 +2604,7 @@ int __stdcall FsPutFileW(WCHAR* LocalName,WCHAR* RemoteName,int CopyFlags)
 									else if (err==0)
 										err=9;
 									if (SUCCEEDED(hr2))
-										hr2 = spResInfo->SetSignedLargeIntegerValue(WPD_RESOURCE_ATTRIBUTE_TOTAL_SIZE,pPreviewImage->dwDataLen);
+										hr2 = spResInfo->SetSignedLargeIntegerValue(WPD_RESOURCE_ATTRIBUTE_TOTAL_SIZE,pPreviewImage->len);
 									else if (err==0)
 										err=10;
 									if (SUCCEEDED(hr2))
@@ -2402,7 +2625,7 @@ int __stdcall FsPutFileW(WCHAR* LocalName,WCHAR* RemoteName,int CopyFlags)
 										err=14;
 									if (SUCCEEDED(hr2)) {
 										DWORD BytesWritten;
-										hr2=pStream->Write(pPreviewImage->pbData,pPreviewImage->dwDataLen,&BytesWritten);
+										hr2=pStream->Write(pPreviewImage->data,pPreviewImage->len,&BytesWritten);
 										if (!SUCCEEDED(hr2))
 											err=16;
 										HRESULT hr3=pStream->Commit(STGC_DEFAULT);
@@ -2476,7 +2699,7 @@ int __stdcall FsPutFileW(WCHAR* LocalName,WCHAR* RemoteName,int CopyFlags)
 							CloseHandle(f);
 							PropVariantClear(&pv);
 							if (pPreviewImage)
-								free(pPreviewImage);
+								FreeAlbumArt(pPreviewImage);
 							pPreviewImage=NULL;
 						}
 						pValues->Release();
@@ -2508,7 +2731,7 @@ int __stdcall FsExecuteFile(HWND MainWin,char* RemoteName,char* Verb)
 
 int __stdcall FsExecuteFileW(HWND MainWin,WCHAR* RemoteName,WCHAR* Verb)
 {
-	char VerbA[wdirtypemax],RemoteNameA[wdirtypemax];
+	char RemoteNameA[wdirtypemax];
 	if (RemoteName[0]!='\\')
 		return FS_EXEC_ERROR;
 	
@@ -2523,8 +2746,40 @@ int __stdcall FsExecuteFileW(HWND MainWin,WCHAR* RemoteName,WCHAR* Verb)
 		}
 		return FS_EXEC_YOURSELF;
 	} else if (_wcsnicmp(Verb,L"quote ",6)==0) {
-		MessageBox(MainWin,wafilenamecopy(VerbA,Verb),"Quote verb not supported!",MB_ICONEXCLAMATION);
-		return FS_EXEC_ERROR;
+		WCHAR* cmd=Verb+6;
+		while (*cmd==' ')
+			cmd++;
+		if (_wcsicmp(cmd,L"refresh")==0 || _wcsicmp(cmd,L"reconnect")==0) {
+			DeviceEventReceived=true;
+			InterlockedExchange(&g_cacheDirty,0);
+			LogProcT(PluginNumber,MSGTYPE_OPERATIONCOMPLETE,L"REFRESH");
+			return FS_EXEC_OK;
+		}
+		if (_wcsicmp(cmd,L"eject")==0) {
+			LockPlugin();
+			PWSTR pnp=FindPnpIdByPath(RemoteName);
+			IPortableDevice* dev=FindStoredDeviceByPath(RemoteName);
+			WCHAR pnpCopy[512]=L"";
+			if (pnp)
+				wcslcpy(pnpCopy,pnp,512);
+			if (dev)
+				dev->Close();
+			UnlockPlugin();
+			BOOL ok=EjectWpdDevice(pnpCopy[0]?pnpCopy:NULL);
+			DeviceEventReceived=true;
+			if (!ok)
+				LogProcT(PluginNumber,MSGTYPE_IMPORTANTERROR,L"Eject failed. Close Explorer/Phone Link and retry.");
+			else
+				LogProcT(PluginNumber,MSGTYPE_DISCONNECT,L"EJECT");
+			return ok?FS_EXEC_OK:FS_EXEC_ERROR;
+		}
+		if (_wcsicmp(cmd,L"info")==0) {
+			ShowDeviceInfoBox(MainWin, RemoteName);
+			return FS_EXEC_OK;
+		}
+		WCHAR help[]=L"Supported: quote refresh | quote eject | quote info | quote reconnect";
+		MessageBoxW(MainWin,help,PLUGIN_DISPLAY_NAME_W,MB_ICONINFORMATION);
+		return FS_EXEC_OK;
 	} else if (_wcsnicmp(Verb,L"chmod ",6)==0) {
 		MessageBox(MainWin,wafilenamecopy(RemoteNameA,Verb),"Chmod verb not supported!",MB_ICONEXCLAMATION);
 		return FS_EXEC_ERROR;

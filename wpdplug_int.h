@@ -24,3 +24,14 @@ BOOL IsContentStop(void);
 
 extern HINSTANCE hInst;
 extern int PluginNumber;
+extern BOOL DeviceEventReceived;
+
+void MarkObjectCacheDirty(void);
+void ClearCache(void);
+HRESULT AdviseWpdDevice(IPortableDevice* dev, LPWSTR* cookie);
+void UnadviseWpdDevice(IPortableDevice* dev, LPWSTR cookie);
+BOOL ShouldHideWpdDevice(IPortableDeviceManager* mgr, LPCWSTR pnpId, LPCWSTR friendly);
+BOOL EjectWpdDevice(LPCWSTR pnpId);
+void ShowDeviceInfoBox(HWND parent, LPCWSTR remoteName);
+PWSTR FindPnpIdByPath(LPCWSTR path);
+extern volatile LONG g_cacheDirty;

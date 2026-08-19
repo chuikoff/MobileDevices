@@ -100,7 +100,7 @@
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
       <SDLCheck>false</SDLCheck>
-      <PreprocessorDefinitions>WIN32;_DEBUG;_WINDOWS;_USRDLL;WPDPLUG_EXPORTS;WINVER=0x0A00;_WIN32_WINNT=0x0A00;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;_DEBUG;_WINDOWS;_USRDLL;WPDPLUG_EXPORTS;WINVER=0x0A00;_WIN32_WINNT=0x0A00;ISOLATION_AWARE_ENABLED=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>false</ConformanceMode>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
@@ -110,7 +110,7 @@
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <ModuleDefinitionFile>wpdplug.def</ModuleDefinitionFile>
-      <AdditionalDependencies>PortableDeviceGuids.lib;WMVCORE.lib;gdiplus.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>PortableDeviceGuids.lib;propsys.lib;setupapi.lib;cfgmgr32.lib;uxtheme.lib;gdiplus.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
@@ -119,7 +119,7 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>false</SDLCheck>
-      <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;_USRDLL;WPDPLUG_EXPORTS;WINVER=0x0A00;_WIN32_WINNT=0x0A00;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;_USRDLL;WPDPLUG_EXPORTS;WINVER=0x0A00;_WIN32_WINNT=0x0A00;ISOLATION_AWARE_ENABLED=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>false</ConformanceMode>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
@@ -130,14 +130,14 @@
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <ModuleDefinitionFile>wpdplug.def</ModuleDefinitionFile>
-      <AdditionalDependencies>PortableDeviceGuids.lib;WMVCORE.lib;gdiplus.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>PortableDeviceGuids.lib;propsys.lib;setupapi.lib;cfgmgr32.lib;uxtheme.lib;gdiplus.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
       <SDLCheck>false</SDLCheck>
-      <PreprocessorDefinitions>WIN32;_DEBUG;_WINDOWS;_USRDLL;WPDPLUG_EXPORTS;WINVER=0x0A00;_WIN32_WINNT=0x0A00;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;_DEBUG;_WINDOWS;_USRDLL;WPDPLUG_EXPORTS;WINVER=0x0A00;_WIN32_WINNT=0x0A00;ISOLATION_AWARE_ENABLED=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>false</ConformanceMode>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
@@ -147,7 +147,7 @@
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <ModuleDefinitionFile>wpdplug.def</ModuleDefinitionFile>
-      <AdditionalDependencies>PortableDeviceGuids.lib;WMVCORE.lib;gdiplus.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>PortableDeviceGuids.lib;propsys.lib;setupapi.lib;cfgmgr32.lib;uxtheme.lib;gdiplus.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -156,7 +156,7 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>false</SDLCheck>
-      <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;_USRDLL;WPDPLUG_EXPORTS;WINVER=0x0A00;_WIN32_WINNT=0x0A00;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;_USRDLL;WPDPLUG_EXPORTS;WINVER=0x0A00;_WIN32_WINNT=0x0A00;ISOLATION_AWARE_ENABLED=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>false</ConformanceMode>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
@@ -167,14 +167,21 @@
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <ModuleDefinitionFile>wpdplug.def</ModuleDefinitionFile>
-      <AdditionalDependencies>PortableDeviceGuids.lib;WMVCORE.lib;gdiplus.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>PortableDeviceGuids.lib;propsys.lib;setupapi.lib;cfgmgr32.lib;uxtheme.lib;gdiplus.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup>
+    <Manifest>
+      <AdditionalManifestFiles>mtpdevices.manifest;%(AdditionalManifestFiles)</AdditionalManifestFiles>
+      <EnableDpiAwareness>PerMonitorHighDPIAware</EnableDpiAwareness>
+    </Manifest>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="connectionsettings.cpp" />
     <ClCompile Include="cunicode.cpp" />
     <ClCompile Include="extra.cpp" />
     <ClCompile Include="utils.cpp" />
+    <ClCompile Include="wpd20.cpp" />
     <ClCompile Include="wpdplug.cpp" />
   </ItemGroup>
   <ItemGroup>
@@ -188,6 +195,7 @@
     <ClInclude Include="wpdplug_int.h" />
   </ItemGroup>
   <ItemGroup>
+    <None Include="mtpdevices.manifest" />
     <None Include="LICENSE.txt" />
     <None Include="pluginst.inf" />
     <None Include="ReadMe.txt" />

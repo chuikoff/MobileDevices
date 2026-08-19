@@ -1,5 +1,8 @@
 #include <windows.h>
+#include <uxtheme.h>
 #include "cunicode.h"
+
+#pragma comment(lib, "uxtheme.lib")
 #include "resource.h"
 #include "wpdplug.h"
 extern WCHAR DefaultIniNameW[MAX_PATH];
@@ -57,6 +60,7 @@ BOOL CALLBACK PropDlg(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
 				CheckDlgButton(hDlg,IDC_UNIVERSALTIME,BST_CHECKED);
 				break;
 			}
+			SetWindowTheme(hDlg, L"Explorer", NULL);
 			return TRUE;
 		case WM_COMMAND:
 			switch (LOWORD(wParam)) {
