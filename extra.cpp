@@ -45,7 +45,6 @@ void __stdcall FsStatusInfo(char* RemoteDir,int InfoStartEnd,int InfoOperation)
 void __stdcall FsStatusInfoW(WCHAR* RemoteDir,int InfoStartEnd,int InfoOperation)
 {
 	UNREFERENCED_PARAMETER(RemoteDir);
-	UNREFERENCED_PARAMETER(InfoOperation);
 	EnsureComApartment();
 	if (InfoStartEnd==FS_STATUS_START) {
 		ResetAbort();
@@ -53,6 +52,8 @@ void __stdcall FsStatusInfoW(WCHAR* RemoteDir,int InfoStartEnd,int InfoOperation
 	}
 	LockPlugin();
 	SetCancelDevice(NULL);
+	if (InfoStartEnd==FS_STATUS_END && InfoOperation==FS_STATUS_OP_LIST)
+		EnsureWpdEventsAdvised();
 	UnlockPlugin();
 }
 

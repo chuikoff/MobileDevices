@@ -661,11 +661,9 @@ HRESULT GetFolderIDFromPathName(LPWSTR pPath,IEnumPortableDeviceObjectIDs** pEnu
 	}
 	if (pDevice==NULL) {
 		hr = OpenWpdDevice(DeviceID, &pDevice);
-		if (SUCCEEDED(hr)) {
+		if (SUCCEEDED(hr))
 			StoredDevices[DeviceIndex]=pDevice;
-			if (StoredEventCookies)
-				AdviseWpdDevice(pDevice, &StoredEventCookies[DeviceIndex]);
-		} else
+		else
 			return hr;
 	} else
 		hr=S_OK;
@@ -1121,40 +1119,58 @@ public:
 	}
 };
 
+static BOOL g_bulkDisabled=FALSE;
+
 static void PrefetchBatchValues(pLastFindStuct lf)
 {
 	ReleaseBatchValues(lf);
-	if (!lf || !lf->pProperties || !lf->pPropertiesToRead || lf->szObjectIDsFetched==0)
+	// Small folders (device root, a few storages): lazy GetValues in PopulateFindDataW.
+	// Bulk on many Android MTP stacks never calls OnEnd → used to block 20s per directory.
+	if (g_bulkDisabled || !lf || !lf->pProperties || !lf->pPropertiesToRead || lf->szObjectIDsFetched<24)
 		return;
 	IPortableDevicePropertiesBulk* bulk=NULL;
-	if (SUCCEEDED(lf->pProperties->QueryInterface(IID_IPortableDevicePropertiesBulk,(void**)&bulk)) && bulk) {
-		IPortableDevicePropVariantCollection* ids=NULL;
-		if (SUCCEEDED(CoCreateInstance(CLSID_PortableDevicePropVariantCollection,NULL,CLSCTX_INPROC_SERVER,
-			IID_IPortableDevicePropVariantCollection,(void**)&ids))) {
-			for (DWORD i=0;i<lf->szObjectIDsFetched;i++) {
-				PROPVARIANT pv;
-				PropVariantInit(&pv);
-				pv.vt=VT_LPWSTR;
-				pv.pwszVal=lf->szObjectIDArray[i];
-				ids->Add(&pv);
-				pv.vt=VT_EMPTY;
-				pv.pwszVal=NULL;
-			}
-			CBulkCb* cb=new CBulkCb(lf);
-			GUID ctx=GUID_NULL;
-			HRESULT hr=bulk->QueueGetValuesByObjectList(ids,lf->pPropertiesToRead,cb,&ctx);
-			if (SUCCEEDED(hr))
-				hr=bulk->Start(ctx);
-			if (SUCCEEDED(hr))
-				cb->WaitDone(20000);
-			cb->Release();
-			ids->Release();
-		}
+	if (FAILED(lf->pProperties->QueryInterface(IID_IPortableDevicePropertiesBulk,(void**)&bulk)) || !bulk)
+		return;
+	IPortableDevicePropVariantCollection* ids=NULL;
+	if (FAILED(CoCreateInstance(CLSID_PortableDevicePropVariantCollection,NULL,CLSCTX_INPROC_SERVER,
+		IID_IPortableDevicePropVariantCollection,(void**)&ids))) {
 		bulk->Release();
 		return;
 	}
-	for (DWORD i=0;i<lf->szObjectIDsFetched;i++)
-		lf->pProperties->GetValues(lf->szObjectIDArray[i],lf->pPropertiesToRead,&lf->szObjectValues[i]);
+	for (DWORD i=0;i<lf->szObjectIDsFetched;i++) {
+		PROPVARIANT pv;
+		PropVariantInit(&pv);
+		pv.vt=VT_LPWSTR;
+		pv.pwszVal=lf->szObjectIDArray[i];
+		ids->Add(&pv);
+		pv.vt=VT_EMPTY;
+		pv.pwszVal=NULL;
+	}
+	CBulkCb* cb=new CBulkCb(lf);
+	GUID ctx=GUID_NULL;
+	HRESULT hr=bulk->QueueGetValuesByObjectList(ids,lf->pPropertiesToRead,cb,&ctx);
+	if (SUCCEEDED(hr))
+		hr=bulk->Start(ctx);
+	if (SUCCEEDED(hr)) {
+		HRESULT waitHr=cb->WaitDone(800);
+		if (FAILED(waitHr)) {
+			g_bulkDisabled=TRUE;
+			bulk->Cancel(ctx);
+			ReleaseBatchValues(lf);
+		}
+	} else
+		g_bulkDisabled=TRUE;
+	cb->Release();
+	ids->Release();
+	bulk->Release();
+}
+
+void EnsureWpdEventsAdvised(void)
+{
+	for (DWORD i=0;i<StoredNumIds;i++) {
+		if (StoredDevices[i] && StoredEventCookies && StoredEventCookies[i]==NULL)
+			AdviseWpdDevice(StoredDevices[i], &StoredEventCookies[i]);
+	}
 }
 
 void PopulateFindDataW(PWSTR szObject,pLastFindStuct lf,WIN32_FIND_DATAW *FindData,int LocalTime)
@@ -1328,7 +1344,7 @@ HANDLE __stdcall FsFindFirstW(WCHAR* Path,WIN32_FIND_DATAW *FindData)
 	
 	if (Path[0]=='\\') {
 		LockPlugin();
-		if (DeviceEventReceived || Path[1]==0) {  // reload all devices in plugin root, or when receiving insert/remove notification
+		if (DeviceEventReceived) {
 			DeviceEventReceived=false;
 			InterlockedExchange(&g_cacheDirty,0);
 			FreeAllDevices();

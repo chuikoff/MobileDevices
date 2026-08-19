@@ -30,6 +30,7 @@ void MarkObjectCacheDirty(void);
 void ClearCache(void);
 HRESULT AdviseWpdDevice(IPortableDevice* dev, LPWSTR* cookie);
 void UnadviseWpdDevice(IPortableDevice* dev, LPWSTR cookie);
+void EnsureWpdEventsAdvised(void);
 BOOL ShouldHideWpdDevice(IPortableDeviceManager* mgr, LPCWSTR pnpId, LPCWSTR friendly);
 BOOL EjectWpdDevice(LPCWSTR pnpId);
 void ShowDeviceInfoBox(HWND parent, LPCWSTR remoteName);
