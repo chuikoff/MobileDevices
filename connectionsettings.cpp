@@ -5,6 +5,7 @@
 #pragma comment(lib, "uxtheme.lib")
 #include "resource.h"
 #include "wpdplug.h"
+#include "wpdplug_int.h"
 
 extern WCHAR DefaultIniNameW[MAX_PATH];
 WCHAR SettingsName[MAX_PATH];
@@ -16,12 +17,12 @@ enum { UI_LANG_EN=0, UI_LANG_RU=1 };
 struct DlgStrings {
 	const WCHAR* caption;
 	const WCHAR* langLabel;
+	const WCHAR* infoGroup;
 	const WCHAR* timeGroup;
 	const WCHAR* localNew;
 	const WCHAR* localOld;
 	const WCHAR* utc;
 	const WCHAR* hint1;
-	const WCHAR* hint2;
 	const WCHAR* ok;
 	const WCHAR* cancel;
 };
@@ -29,12 +30,12 @@ struct DlgStrings {
 static const DlgStrings kStrEn={
 	L"Device Settings",
 	L"Language:",
+	L"Android / device",
 	L"File time sent by the device",
 	L"Local time, new conversion (Android)",
 	L"Local time, old conversion (some mp3 players)",
 	L"UTC (some mp3 players)",
 	L"Hint: upload a file and check whether the timestamp is correct. On most devices it will be the current time.",
-	L"The conversion only matters for files dated in another DST period (e.g. created in summer, viewed in winter).",
 	L"OK",
 	L"Cancel"
 };
@@ -42,15 +43,18 @@ static const DlgStrings kStrEn={
 static const DlgStrings kStrRu={
 	L"Настройки устройства",
 	L"Язык:",
+	L"Android / устройство",
 	L"Дата и время, которые присылает устройство",
 	L"Местное время, новый способ (Android)",
 	L"Местное время, старый способ (некоторые mp3-плееры)",
 	L"Всемирное время UTC (некоторые mp3-плееры)",
 	L"Подсказка: загрузите файл и проверьте, верна ли дата. На большинстве устройств это текущее время.",
-	L"Способ перевода важен только для файлов из другого периода летнего времени (создан летом, открыт зимой).",
 	L"ОК",
 	L"Отмена"
 };
+
+static PluginDeviceInfo g_dlgInfo;
+static BOOL g_dlgInfoOk=FALSE;
 
 static int ReadLocalTimeIni(WCHAR* keyName)
 {
@@ -100,19 +104,32 @@ int UseLocalTime(WCHAR* path)
 	}
 }
 
+static void FillDeviceInfoBox(HWND hDlg, int lang)
+{
+	WCHAR text[2048];
+	if (g_dlgInfoOk)
+		FormatDeviceInfo(lang, &g_dlgInfo, text, 2048);
+	else
+		wcslcpy(text, lang==UI_LANG_RU
+			? L"Не удалось прочитать сведения (откройте устройство и повторите)."
+			: L"Could not read device info (open the device and retry).", 2048);
+	SetDlgItemTextW(hDlg, IDC_DEVICE_INFO, text);
+}
+
 static void ApplyDlgLanguage(HWND hDlg, int lang)
 {
 	const DlgStrings* s=(lang==UI_LANG_RU) ? &kStrRu : &kStrEn;
 	SetWindowTextW(hDlg, s->caption);
 	SetDlgItemTextW(hDlg, IDC_LANG_LABEL, s->langLabel);
+	SetDlgItemTextW(hDlg, IDC_INFO_GROUP, s->infoGroup);
 	SetDlgItemTextW(hDlg, IDC_TIME_GROUP, s->timeGroup);
 	SetDlgItemTextW(hDlg, IDC_LOCALTIME_NEW, s->localNew);
 	SetDlgItemTextW(hDlg, IDC_LOCALTIME_OLD, s->localOld);
 	SetDlgItemTextW(hDlg, IDC_UNIVERSALTIME, s->utc);
 	SetDlgItemTextW(hDlg, IDC_HINT1, s->hint1);
-	SetDlgItemTextW(hDlg, IDC_HINT2, s->hint2);
 	SetDlgItemTextW(hDlg, IDOK, s->ok);
 	SetDlgItemTextW(hDlg, IDCANCEL, s->cancel);
+	FillDeviceInfoBox(hDlg, lang);
 }
 
 BOOL CALLBACK PropDlg(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
@@ -126,6 +143,7 @@ BOOL CALLBACK PropDlg(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
 		case WM_INITDIALOG:
 			SendDlgItemMessageW(hDlg, IDC_LANGUAGE, CB_ADDSTRING, 0, (LPARAM)L"English");
 			SendDlgItemMessageW(hDlg, IDC_LANGUAGE, CB_ADDSTRING, 0, (LPARAM)L"Русский");
+			g_dlgInfoOk=QueryDeviceInfo(SettingsName, &g_dlgInfo);
 			{
 				int lang=GetPluginUiLanguage();
 				SendDlgItemMessageW(hDlg, IDC_LANGUAGE, CB_SETCURSEL, lang, 0);

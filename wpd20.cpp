@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <wchar.h>
 #include <shlwapi.h>
+#include <propvarutil.h>
 #include <cfgmgr32.h>
 #include <setupapi.h>
 #include <PortableDeviceApi.h>
@@ -10,6 +11,7 @@
 #include "cunicode.h"
 #include "fsplugin.h"
 #include "wpdplug_int.h"
+#include "connectionsettings.h"
 
 #pragma comment(lib, "setupapi.lib")
 #pragma comment(lib, "cfgmgr32.lib")
@@ -125,84 +127,234 @@ BOOL EjectWpdDevice(LPCWSTR pnpId)
 	return cr==CR_SUCCESS;
 }
 
+static void CopyWpdString(IPortableDeviceValues* v, REFPROPERTYKEY key, WCHAR* dest, int destcch)
+{
+	dest[0]=0;
+	if (!v)
+		return;
+	LPWSTR s=NULL;
+	if (SUCCEEDED(v->GetStringValue(key, &s)) && s && s[0])
+		wcslcpy(dest, s, destcch);
+	if (s)
+		CoTaskMemFree(s);
+}
+
+static int ReadBatteryPercent(IPortableDeviceValues* v)
+{
+	if (!v)
+		return -1;
+	ULONG u=0;
+	if (SUCCEEDED(v->GetUnsignedIntegerValue(WPD_DEVICE_POWER_LEVEL, &u)))
+		return (int)u;
+	PROPVARIANT pv;
+	PropVariantInit(&pv);
+	int bat=-1;
+	if (SUCCEEDED(v->GetValue(WPD_DEVICE_POWER_LEVEL, &pv))) {
+		ULONGLONG n=0;
+		if (pv.vt==VT_UI4 || pv.vt==VT_I4)
+			bat=(int)pv.ulVal;
+		else if (pv.vt==VT_UI1)
+			bat=(int)pv.bVal;
+		else if (SUCCEEDED(PropVariantToUInt64(pv, &n)))
+			bat=(int)n;
+	}
+	PropVariantClear(&pv);
+	return bat;
+}
+
+static void FormatBytes(ULONGLONG n, int lang, WCHAR* buf, int cch)
+{
+	const double gb=1024.0*1024.0*1024.0;
+	const double mb=1024.0*1024.0;
+	if (n>=(ULONGLONG)(10*gb))
+		swprintf_s(buf, cch, lang ? L"%.1f ГБ" : L"%.1f GB", n/gb);
+	else if (n>=(ULONGLONG)gb)
+		swprintf_s(buf, cch, lang ? L"%.2f ГБ" : L"%.2f GB", n/gb);
+	else if (n>=(ULONGLONG)mb)
+		swprintf_s(buf, cch, lang ? L"%.0f МБ" : L"%.0f MB", n/mb);
+	else
+		swprintf_s(buf, cch, lang ? L"%llu байт" : L"%llu bytes", n);
+}
+
+BOOL QueryDeviceInfo(LPCWSTR remoteName, PluginDeviceInfo* info)
+{
+	if (!info)
+		return FALSE;
+	memset(info, 0, sizeof(*info));
+	info->battery=-1;
+	if (!remoteName || remoteName[0]==0)
+		return FALSE;
+
+	EnsureComApartment();
+	if (!InitFunctionsIfNeeded(TRUE))
+		return FALSE;
+
+	WCHAR path[wdirtypemax];
+	if (remoteName[0]=='\\')
+		wcslcpy(path, remoteName, wdirtypemax-1);
+	else {
+		path[0]='\\';
+		wcslcpy(path+1, remoteName, wdirtypemax-2);
+	}
+	WCHAR* slash=wcschr(path+1, '\\');
+	if (slash)
+		slash[1]=0;
+	else
+		wcslcatbackslash(path, wdirtypemax-1);
+
+	LockPlugin();
+	IPortableDeviceContent* content=NULL;
+	IPortableDeviceProperties* props=NULL;
+	LPWSTR rootId=NULL;
+	HRESULT hr=GetFolderIDFromPathName(path, NULL, &props, &content, &rootId);
+	if (FAILED(hr) || !content || !props) {
+		UnlockPlugin();
+		if (content) content->Release();
+		if (props) props->Release();
+		if (rootId) CoTaskMemFree(rootId);
+		return FALSE;
+	}
+
+	IPortableDeviceKeyCollection* keys=NULL;
+	if (SUCCEEDED(CoCreateInstance(CLSID_PortableDeviceKeyCollection, NULL, CLSCTX_INPROC_SERVER,
+		IID_IPortableDeviceKeyCollection, (void**)&keys))) {
+		keys->Add(WPD_DEVICE_FRIENDLY_NAME);
+		keys->Add(WPD_DEVICE_MANUFACTURER);
+		keys->Add(WPD_DEVICE_MODEL);
+		keys->Add(WPD_DEVICE_FIRMWARE_VERSION);
+		keys->Add(WPD_DEVICE_PROTOCOL);
+		keys->Add(WPD_DEVICE_POWER_LEVEL);
+		IPortableDeviceValues* v=NULL;
+		if (SUCCEEDED(props->GetValues(WPD_DEVICE_OBJECT_ID, keys, &v)) && v) {
+			CopyWpdString(v, WPD_DEVICE_MANUFACTURER, info->manufacturer, 128);
+			CopyWpdString(v, WPD_DEVICE_MODEL, info->model, 128);
+			if (!info->model[0])
+				CopyWpdString(v, WPD_DEVICE_FRIENDLY_NAME, info->model, 128);
+			CopyWpdString(v, WPD_DEVICE_FIRMWARE_VERSION, info->firmware, 128);
+			CopyWpdString(v, WPD_DEVICE_PROTOCOL, info->protocol, 80);
+			info->battery=ReadBatteryPercent(v);
+			v->Release();
+		}
+		keys->Release();
+	}
+
+	IEnumPortableDeviceObjectIDs* en=NULL;
+	if (SUCCEEDED(content->EnumObjects(0, WPD_DEVICE_OBJECT_ID, NULL, &en)) && en) {
+		PWSTR ids[32]={0};
+		DWORD fetched=0;
+		if (SUCCEEDED(en->Next(32, ids, &fetched))) {
+			IPortableDeviceKeyCollection* sk=NULL;
+			if (SUCCEEDED(CoCreateInstance(CLSID_PortableDeviceKeyCollection, NULL, CLSCTX_INPROC_SERVER,
+				IID_IPortableDeviceKeyCollection, (void**)&sk))) {
+				sk->Add(WPD_FUNCTIONAL_OBJECT_CATEGORY);
+				sk->Add(WPD_OBJECT_NAME);
+				sk->Add(WPD_OBJECT_ORIGINAL_FILE_NAME);
+				sk->Add(WPD_STORAGE_DESCRIPTION);
+				sk->Add(WPD_STORAGE_FREE_SPACE_IN_BYTES);
+				sk->Add(WPD_STORAGE_CAPACITY);
+				for (DWORD i=0;i<fetched && info->nstor<DEVICE_INFO_MAX_STOR;i++) {
+					IPortableDeviceValues* sv=NULL;
+					if (FAILED(props->GetValues(ids[i], sk, &sv)) || !sv) {
+						CoTaskMemFree(ids[i]);
+						continue;
+					}
+					GUID cat=GUID_NULL;
+					sv->GetGuidValue(WPD_FUNCTIONAL_OBJECT_CATEGORY, &cat);
+					ULONGLONG cap=0, freeb=0;
+					sv->GetUnsignedLargeIntegerValue(WPD_STORAGE_CAPACITY, &cap);
+					sv->GetUnsignedLargeIntegerValue(WPD_STORAGE_FREE_SPACE_IN_BYTES, &freeb);
+					BOOL isStor=IsEqualGUID(cat, WPD_FUNCTIONAL_CATEGORY_STORAGE) || cap>0 || freeb>0;
+					if (isStor) {
+						int n=info->nstor;
+						CopyWpdString(sv, WPD_STORAGE_DESCRIPTION, info->stor[n].name, 80);
+						if (!info->stor[n].name[0])
+							CopyWpdString(sv, WPD_OBJECT_ORIGINAL_FILE_NAME, info->stor[n].name, 80);
+						if (!info->stor[n].name[0])
+							CopyWpdString(sv, WPD_OBJECT_NAME, info->stor[n].name, 80);
+						if (!info->stor[n].name[0])
+							wcslcpy(info->stor[n].name, L"Storage", 80);
+						info->stor[n].capacityBytes=cap;
+						info->stor[n].freeBytes=freeb;
+						info->nstor++;
+					}
+					sv->Release();
+					CoTaskMemFree(ids[i]);
+				}
+				sk->Release();
+			} else {
+				for (DWORD i=0;i<fetched;i++)
+					CoTaskMemFree(ids[i]);
+			}
+		}
+		en->Release();
+	}
+
+	if (rootId)
+		CoTaskMemFree(rootId);
+	props->Release();
+	content->Release();
+	UnlockPlugin();
+	return TRUE;
+}
+
+void FormatDeviceInfo(int lang, const PluginDeviceInfo* info, WCHAR* out, int outcch)
+{
+	if (!out || outcch<8)
+		return;
+	out[0]=0;
+	if (!info)
+		return;
+	const int ru=(lang==1);
+	WCHAR line[256];
+	const WCHAR* na=ru ? L"н/д" : L"n/a";
+
+	swprintf_s(line, ru ? L"Модель: %s\r\n" : L"Model: %s\r\n",
+		info->model[0] ? info->model : na);
+	wcslcat(out, line, outcch);
+	if (info->manufacturer[0]) {
+		swprintf_s(line, ru ? L"Производитель: %s\r\n" : L"Manufacturer: %s\r\n", info->manufacturer);
+		wcslcat(out, line, outcch);
+	}
+	swprintf_s(line, ru ? L"Прошивка: %s\r\n" : L"Firmware: %s\r\n",
+		info->firmware[0] ? info->firmware : na);
+	wcslcat(out, line, outcch);
+	if (info->battery>=0)
+		swprintf_s(line, ru ? L"Батарея: %d%%\r\n" : L"Battery: %d%%\r\n", info->battery);
+	else
+		swprintf_s(line, ru ? L"Батарея: %s\r\n" : L"Battery: %s\r\n", na);
+	wcslcat(out, line, outcch);
+	if (info->protocol[0]) {
+		swprintf_s(line, ru ? L"Протокол: %s\r\n" : L"Protocol: %s\r\n", info->protocol);
+		wcslcat(out, line, outcch);
+	}
+	if (info->nstor==0) {
+		wcslcat(out, ru ? L"Память: н/д\r\n" : L"Storage: n/a\r\n", outcch);
+		return;
+	}
+	for (int i=0;i<info->nstor;i++) {
+		WCHAR fs[64], cs[64];
+		if (info->stor[i].capacityBytes || info->stor[i].freeBytes) {
+			FormatBytes(info->stor[i].freeBytes, ru, fs, 64);
+			FormatBytes(info->stor[i].capacityBytes, ru, cs, 64);
+			swprintf_s(line, ru ? L"%s: %s свободно / %s\r\n" : L"%s: %s free / %s\r\n",
+				info->stor[i].name, fs, cs);
+		} else
+			swprintf_s(line, L"%s\r\n", info->stor[i].name);
+		wcslcat(out, line, outcch);
+	}
+}
+
 void ShowDeviceInfoBox(HWND parent, LPCWSTR remoteName)
 {
-	EnsureComApartment();
-	InitFunctionsIfNeeded(TRUE);
-	WCHAR msg[1024];
-	msg[0]=0;
-	LPCWSTR pnp=FindPnpIdByPath(remoteName);
-	IPortableDevice* dev=FindStoredDeviceByPath(remoteName);
-	swprintf_s(msg, L"%s\r\n", PLUGIN_DISPLAY_NAME_W);
-	if (pnp) {
-		wcslcat(msg, L"PnP: ", 1024);
-		wcslcat(msg, pnp, 1024);
-		wcslcat(msg, L"\r\n", 1024);
+	PluginDeviceInfo info;
+	WCHAR msg[2048];
+	if (!QueryDeviceInfo(remoteName, &info)) {
+		int ru=(GetPluginUiLanguage()==1);
+		MessageBoxW(parent,
+			ru ? L"Не удалось прочитать сведения об устройстве." : L"Could not read device information.",
+			PLUGIN_DISPLAY_NAME_W, MB_OK | MB_ICONWARNING);
+		return;
 	}
-	if (!dev && pnp) {
-		LockPlugin();
-		WCHAR path[wdirtypemax];
-		wcslcpy(path, remoteName, wdirtypemax-1);
-		IPortableDeviceContent* c=NULL;
-		LPWSTR id=NULL;
-		GetFolderIDFromPathName(path, NULL, NULL, &c, &id);
-		if (c) c->Release();
-		if (id) CoTaskMemFree(id);
-		dev=FindStoredDeviceByPath(remoteName);
-		UnlockPlugin();
-	}
-	if (dev) {
-		IPortableDeviceContent* content=NULL;
-		if (SUCCEEDED(dev->Content(&content))) {
-			IPortableDeviceProperties* props=NULL;
-			if (SUCCEEDED(content->Properties(&props))) {
-				IPortableDeviceKeyCollection* keys=NULL;
-				if (SUCCEEDED(CoCreateInstance(CLSID_PortableDeviceKeyCollection, NULL, CLSCTX_INPROC_SERVER,
-					IID_IPortableDeviceKeyCollection, (void**)&keys))) {
-					keys->Add(WPD_DEVICE_FRIENDLY_NAME);
-					keys->Add(WPD_DEVICE_SERIAL_NUMBER);
-					keys->Add(WPD_DEVICE_FIRMWARE_VERSION);
-					keys->Add(WPD_DEVICE_PROTOCOL);
-					keys->Add(WPD_DEVICE_POWER_LEVEL);
-					keys->Add(WPD_DEVICE_MANUFACTURER);
-					keys->Add(WPD_DEVICE_MODEL);
-					IPortableDeviceValues* v=NULL;
-					if (SUCCEEDED(props->GetValues(WPD_DEVICE_OBJECT_ID, keys, &v)) && v) {
-						LPWSTR s=NULL;
-						if (SUCCEEDED(v->GetStringValue(WPD_DEVICE_MANUFACTURER, &s)) && s) {
-							wcslcat(msg, L"Manufacturer: ", 1024); wcslcat(msg, s, 1024); wcslcat(msg, L"\r\n", 1024);
-							CoTaskMemFree(s); s=NULL;
-						}
-						if (SUCCEEDED(v->GetStringValue(WPD_DEVICE_MODEL, &s)) && s) {
-							wcslcat(msg, L"Model: ", 1024); wcslcat(msg, s, 1024); wcslcat(msg, L"\r\n", 1024);
-							CoTaskMemFree(s); s=NULL;
-						}
-						if (SUCCEEDED(v->GetStringValue(WPD_DEVICE_SERIAL_NUMBER, &s)) && s) {
-							wcslcat(msg, L"Serial: ", 1024); wcslcat(msg, s, 1024); wcslcat(msg, L"\r\n", 1024);
-							CoTaskMemFree(s); s=NULL;
-						}
-						if (SUCCEEDED(v->GetStringValue(WPD_DEVICE_FIRMWARE_VERSION, &s)) && s) {
-							wcslcat(msg, L"Firmware: ", 1024); wcslcat(msg, s, 1024); wcslcat(msg, L"\r\n", 1024);
-							CoTaskMemFree(s); s=NULL;
-						}
-						if (SUCCEEDED(v->GetStringValue(WPD_DEVICE_PROTOCOL, &s)) && s) {
-							wcslcat(msg, L"Protocol: ", 1024); wcslcat(msg, s, 1024); wcslcat(msg, L"\r\n", 1024);
-							CoTaskMemFree(s); s=NULL;
-						}
-						ULONG bat=0;
-						if (SUCCEEDED(v->GetUnsignedIntegerValue(WPD_DEVICE_POWER_LEVEL, &bat))) {
-							WCHAR b[64];
-							swprintf_s(b, L"Battery: %u%%\r\n", bat);
-							wcslcat(msg, b, 1024);
-						}
-						v->Release();
-					}
-					keys->Release();
-				}
-				props->Release();
-			}
-			content->Release();
-		}
-	}
+	FormatDeviceInfo(GetPluginUiLanguage(), &info, msg, 2048);
 	MessageBoxW(parent, msg, PLUGIN_DISPLAY_NAME_W, MB_OK | MB_ICONINFORMATION);
 }

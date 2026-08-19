@@ -1,4 +1,4 @@
-MTP Devices plugin v2.0.2
+MTP Devices plugin v2.0.3
 =======================
 Modified from Windows Media Audio 2 (wpdplug) by Christian Ghisler.
 
@@ -30,7 +30,7 @@ The plugin shows up in Network Neighborhood as "MTP Devices".
 Command line (current plugin path):
   quote refresh     rescan devices
   quote eject       safely remove the current device
-  quote info        serial, battery, protocol, firmware
+  quote info        model, firmware, battery, storage free/capacity
   quote reconnect   same as refresh
 
 Existing MediaAudio2 timezone settings (Alt+Enter on the device) are still
@@ -38,6 +38,8 @@ read; new settings are stored under [MTPDevices].
 
 History
 =======
+20260819 Release v2.0.3
+20260819 Added: Alt+Enter and quote info show model, firmware, battery and storage space (Android MTP)
 20260819 Release v2.0.2
 20260819 Added: Settings dialog language switch (English / Русский)
 20260819 Changed: Default file list uses standard Total Commander columns (name, size, date)

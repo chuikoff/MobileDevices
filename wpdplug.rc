@@ -24,21 +24,22 @@ LANGUAGE LANG_NEUTRAL, SUBLANG_NEUTRAL
 #pragma code_page(65001)
 #endif
 
-IDD_CONNECTIONSETTINGS DIALOGEX 0, 0, 300, 200
+IDD_CONNECTIONSETTINGS DIALOGEX 0, 0, 300, 268
 STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "MTP Devices"
 FONT 9, "Segoe UI", 400, 0, 0x1
 BEGIN
     LTEXT           "Language",IDC_LANG_LABEL,12,10,80,10
     COMBOBOX        IDC_LANGUAGE,96,8,196,80,CBS_DROPDOWNLIST | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP
-    GROUPBOX        "Time",IDC_TIME_GROUP,7,28,286,132
-    CONTROL         "Local new",IDC_LOCALTIME_NEW,"Button",BS_AUTORADIOBUTTON | WS_GROUP,12,44,276,10
-    CONTROL         "Local old",IDC_LOCALTIME_OLD,"Button",BS_AUTORADIOBUTTON,12,58,276,10
-    CONTROL         "UTC",IDC_UNIVERSALTIME,"Button",BS_AUTORADIOBUTTON,12,72,276,10
-    LTEXT           "hint1",IDC_HINT1,12,88,276,34
-    LTEXT           "hint2",IDC_HINT2,12,124,276,30
-    DEFPUSHBUTTON   "OK",IDOK,186,178,50,14
-    PUSHBUTTON      "Cancel",IDCANCEL,243,178,50,14
+    GROUPBOX        "Device",IDC_INFO_GROUP,7,26,286,96
+    EDITTEXT        IDC_DEVICE_INFO,12,38,276,78,ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL | WS_BORDER | NOT WS_TABSTOP
+    GROUPBOX        "Time",IDC_TIME_GROUP,7,126,286,108
+    CONTROL         "Local new",IDC_LOCALTIME_NEW,"Button",BS_AUTORADIOBUTTON | WS_GROUP,12,142,276,10
+    CONTROL         "Local old",IDC_LOCALTIME_OLD,"Button",BS_AUTORADIOBUTTON,12,156,276,10
+    CONTROL         "UTC",IDC_UNIVERSALTIME,"Button",BS_AUTORADIOBUTTON,12,170,276,10
+    LTEXT           "hint1",IDC_HINT1,12,186,276,40
+    DEFPUSHBUTTON   "OK",IDOK,186,244,50,14
+    PUSHBUTTON      "Cancel",IDCANCEL,243,244,50,14
 END
 
 
@@ -96,8 +97,8 @@ IDI_ICON1               ICON                    "ICONROOT.ICO"
 //
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 2,0,0,2
- PRODUCTVERSION 2,0,0,2
+ FILEVERSION 2,0,0,3
+ PRODUCTVERSION 2,0,0,3
  FILEFLAGSMASK 0x3fL
 #ifdef _DEBUG
  FILEFLAGS 0x1L
@@ -114,12 +115,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "Ghisler Software GmbH"
             VALUE "FileDescription", "MTP Devices - Total Commander WPD/MTP plugin (modified from MediaAudio2)"
-            VALUE "FileVersion", "2.0.2.0"
+            VALUE "FileVersion", "2.0.3.0"
             VALUE "InternalName", "mtpdevices"
             VALUE "LegalCopyright", "Copyright (C) 2011-2018 Christian Ghisler, Ghisler Software GmbH. Modifications (C) 2026. BSD-3-Clause."
             VALUE "OriginalFilename", "mtpdevices.wfx"
             VALUE "ProductName", "MTP Devices"
-            VALUE "ProductVersion", "2.0.2.0"
+            VALUE "ProductVersion", "2.0.3.0"
         END
     END
     BLOCK "VarFileInfo"

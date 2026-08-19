@@ -35,4 +35,22 @@ BOOL ShouldHideWpdDevice(IPortableDeviceManager* mgr, LPCWSTR pnpId, LPCWSTR fri
 BOOL EjectWpdDevice(LPCWSTR pnpId);
 void ShowDeviceInfoBox(HWND parent, LPCWSTR remoteName);
 PWSTR FindPnpIdByPath(LPCWSTR path);
+
+#define DEVICE_INFO_MAX_STOR 8
+typedef struct {
+	WCHAR manufacturer[128];
+	WCHAR model[128];
+	WCHAR firmware[128];
+	WCHAR protocol[80];
+	int battery;
+	int nstor;
+	struct {
+		WCHAR name[80];
+		ULONGLONG freeBytes;
+		ULONGLONG capacityBytes;
+	} stor[DEVICE_INFO_MAX_STOR];
+} PluginDeviceInfo;
+
+BOOL QueryDeviceInfo(LPCWSTR remoteName, PluginDeviceInfo* info);
+void FormatDeviceInfo(int lang, const PluginDeviceInfo* info, WCHAR* out, int outcch);
 extern volatile LONG g_cacheDirty;
