@@ -9,6 +9,7 @@
 #include "fsplugin.h"
 #include "wpdplug_int.h"
 #include "resource.h"
+#include "apple_md.h"
 
 enum {
 	FIELD_TYPE=0,
@@ -443,22 +444,36 @@ int __stdcall FsExtractCustomIconW(WCHAR* RemoteName,int ExtractFlags,HICON* The
 	if (!TheIcon || !RemoteName)
 		return FS_ICON_USEDEFAULT;
 	*TheIcon=NULL;
-	BOOL isDir=FALSE;
-	size_t n=wcslen(RemoteName);
-	if (n>0 && RemoteName[n-1]=='\\')
-		isDir=TRUE;
-	WCHAR* slash=wcschr(RemoteName+1,'\\');
-	BOOL isRootOrDevice=(RemoteName[0]=='\\' && (RemoteName[1]==0 || slash==NULL || slash[1]==0));
-	if (isRootOrDevice || (isDir && slash==NULL)) {
-		int wh=(ExtractFlags & FS_ICONFLAG_SMALL)
-			? GetSystemMetrics(SM_CXSMICON)
-			: GetSystemMetrics(SM_CXICON);
-		if (wh<=0)
-			wh=(ExtractFlags & FS_ICONFLAG_SMALL) ? 16 : 32;
+	int wh=(ExtractFlags & FS_ICONFLAG_SMALL)
+		? GetSystemMetrics(SM_CXSMICON)
+		: GetSystemMetrics(SM_CXICON);
+	if (wh<=0)
+		wh=(ExtractFlags & FS_ICONFLAG_SMALL) ? 16 : 32;
+
+	BOOL isRoot=(RemoteName[0]==0) || (RemoteName[0]=='\\' && RemoteName[1]==0);
+	if (isRoot) {
 		*TheIcon=(HICON)LoadImage(hInst,MAKEINTRESOURCE(IDI_ICON1),IMAGE_ICON,wh,wh,
 			LR_DEFAULTCOLOR | LR_SHARED);
-		if (*TheIcon)
-			return FS_ICON_EXTRACTED;
+		return *TheIcon ? FS_ICON_EXTRACTED : FS_ICON_USEDEFAULT;
 	}
-	return FS_ICON_USEDEFAULT;
+
+	WCHAR dev[MAX_PATH];
+	const WCHAR* p=RemoteName[0]=='\\' ? RemoteName+1 : RemoteName;
+	wcslcpy(dev, p, MAX_PATH);
+	WCHAR* sl=wcschr(dev, '\\');
+	if (sl) {
+		if (sl[1]!=0)
+			return FS_ICON_USEDEFAULT;
+		sl[0]=0;
+	}
+	if (!dev[0]) {
+		*TheIcon=(HICON)LoadImage(hInst,MAKEINTRESOURCE(IDI_ICON1),IMAGE_ICON,wh,wh,
+			LR_DEFAULTCOLOR | LR_SHARED);
+		return *TheIcon ? FS_ICON_EXTRACTED : FS_ICON_USEDEFAULT;
+	}
+
+	int id=AppleMdIsDeviceName(dev) ? IDI_IPHONE : IDI_ANDROID;
+	*TheIcon=(HICON)LoadImage(hInst,MAKEINTRESOURCE(id),IMAGE_ICON,wh,wh,
+		LR_DEFAULTCOLOR | LR_SHARED);
+	return *TheIcon ? FS_ICON_EXTRACTED : FS_ICON_USEDEFAULT;
 }

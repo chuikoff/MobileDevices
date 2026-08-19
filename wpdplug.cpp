@@ -1740,6 +1740,20 @@ BOOL __stdcall FsMkDirW(WCHAR* Path)
 	BOOL result=false;
 
 	InitFunctionsIfNeeded(TRUE);
+	{
+		WCHAR dev[MAX_PATH];
+		const WCHAR* rp=Path[0]=='\\' ? Path+1 : Path;
+		wcslcpy(dev, rp, MAX_PATH);
+		WCHAR* sl=wcschr(dev, '\\');
+		WCHAR rel[wdirtypemax]=L"";
+		if (sl) {
+			sl[0]=0;
+			wcslcpy(rel, sl+1, wdirtypemax);
+			wcutlastbackslash(rel);
+		}
+		if (AppleMdIsDeviceName(dev))
+			return AppleMdMkDir(dev, rel);
+	}
 
 	WCHAR wcSearch[wdirtypemax],*p;
 	wcslcpy(wcSearch,Path,wdirtypemax-1);
@@ -1810,6 +1824,24 @@ BOOL __stdcall FsDeleteFileW(WCHAR* RemoteName)
 		return false;
 
 	InitFunctionsIfNeeded(TRUE);
+	{
+		WCHAR dev[MAX_PATH];
+		WCHAR wcTmp[wdirtypemax];
+		wcslcpy(wcTmp, RemoteName, wdirtypemax-1);
+		int tl=(int)wcslen(wcTmp)-1;
+		if (tl>=0 && wcTmp[tl]=='\\')
+			wcTmp[tl]=0;
+		const WCHAR* rp=wcTmp[0]=='\\' ? wcTmp+1 : wcTmp;
+		wcslcpy(dev, rp, MAX_PATH);
+		WCHAR* sl=wcschr(dev, '\\');
+		WCHAR rel[wdirtypemax]=L"";
+		if (sl) {
+			sl[0]=0;
+			wcslcpy(rel, sl+1, wdirtypemax);
+		}
+		if (AppleMdIsDeviceName(dev))
+			return AppleMdDelete(dev, rel);
+	}
 
 	WCHAR wcSearch[wdirtypemax];
 	wcslcpy(wcSearch,RemoteName,wdirtypemax-1);
@@ -2386,6 +2418,19 @@ int __stdcall FsPutFileW(WCHAR* LocalName,WCHAR* RemoteName,int CopyFlags)
 	WCHAR WRemoteName[wdirtypemax];
 	wcslcpy(WLocalName,LocalName,wdirtypemax);
 	wcslcpy(WRemoteName,RemoteName,wdirtypemax);
+	{
+		WCHAR dev[MAX_PATH];
+		const WCHAR* rp=WRemoteName[0]=='\\' ? WRemoteName+1 : WRemoteName;
+		wcslcpy(dev, rp, MAX_PATH);
+		WCHAR* sl=wcschr(dev, '\\');
+		WCHAR rel[wdirtypemax]=L"";
+		if (sl) {
+			sl[0]=0;
+			wcslcpy(rel, sl+1, wdirtypemax);
+		}
+		if (AppleMdIsDeviceName(dev))
+			return AppleMdPutFile(dev, rel, WLocalName, OverWrite);
+	}
 	LockPlugin();
 	InterlockedExchange(&g_abort,0);
 	SetCancelDevice(FindStoredDeviceByPath(RemoteName));

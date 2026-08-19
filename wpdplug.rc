@@ -90,6 +90,8 @@ END
 // Icon with lowest ID value placed first to ensure application icon
 // remains consistent on all systems.
 IDI_ICON1               ICON                    "ICONROOT.ICO"
+IDI_ANDROID             ICON                    "ICONANDROID.ICO"
+IDI_IPHONE              ICON                    "ICONIPHONE.ICO"
 
 /////////////////////////////////////////////////////////////////////////////
 //
@@ -97,8 +99,8 @@ IDI_ICON1               ICON                    "ICONROOT.ICO"
 //
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 2,1,2,0
- PRODUCTVERSION 2,1,2,0
+ FILEVERSION 2,2,0,0
+ PRODUCTVERSION 2,2,0,0
  FILEFLAGSMASK 0x3fL
 #ifdef _DEBUG
  FILEFLAGS 0x1L
@@ -115,12 +117,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "Ghisler Software GmbH"
             VALUE "FileDescription", "MTP Devices - Total Commander WPD/MTP plugin (modified from MediaAudio2)"
-            VALUE "FileVersion", "2.1.2.0"
+            VALUE "FileVersion", "2.2.0.0"
             VALUE "InternalName", "mtpdevices"
             VALUE "LegalCopyright", "Copyright (C) 2011-2018 Christian Ghisler, Ghisler Software GmbH. Modifications (C) 2026. BSD-3-Clause."
             VALUE "OriginalFilename", "mtpdevices.wfx"
             VALUE "ProductName", "MTP Devices"
-            VALUE "ProductVersion", "2.1.2.0"
+            VALUE "ProductVersion", "2.2.0.0"
         END
     END
     BLOCK "VarFileInfo"

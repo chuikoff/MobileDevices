@@ -1,10 +1,14 @@
+#include <winsock2.h>
 #include <windows.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <shlobj.h>
 #include <tlhelp32.h>
 #include "apple_md.h"
 #include "cunicode.h"
 #include "fsplugin.h"
+
+#pragma comment(lib, "ws2_32.lib")
 
 #ifndef kCFStringEncodingUTF8
 #define kCFStringEncodingUTF8 0x08000100
@@ -32,9 +36,27 @@ struct am_device_notification_callback_info {
 
 typedef void (*am_device_notification_callback)(am_device_notification_callback_info*, void*);
 
+typedef void* CFDataRef;
+typedef void* CFDictionaryRef;
+typedef void* CFArrayRef;
+typedef void* CFBooleanRef;
+typedef unsigned long CFTypeID;
+typedef unsigned long CFOptionFlags;
+
 typedef CFStringRef (*t_CFStringCreateWithCString)(CFAllocatorRef, const char*, CFStringEncoding);
 typedef unsigned char (*t_CFStringGetCString)(CFStringRef, char*, CFIndex, CFStringEncoding);
 typedef void (*t_CFRelease)(CFTypeRef);
+typedef CFTypeID (*t_CFGetTypeID)(CFTypeRef);
+typedef CFTypeID (*t_CFStringGetTypeID)(void);
+typedef CFTypeID (*t_CFArrayGetTypeID)(void);
+typedef CFTypeID (*t_CFDictionaryGetTypeID)(void);
+typedef CFTypeID (*t_CFBooleanGetTypeID)(void);
+typedef CFIndex (*t_CFArrayGetCount)(CFArrayRef);
+typedef CFTypeRef (*t_CFArrayGetValueAtIndex)(CFArrayRef, CFIndex);
+typedef CFTypeRef (*t_CFDictionaryGetValue)(CFDictionaryRef, CFTypeRef);
+typedef unsigned char (*t_CFBooleanGetValue)(CFBooleanRef);
+typedef CFDataRef (*t_CFDataCreate)(CFAllocatorRef, const unsigned char*, CFIndex);
+typedef CFTypeRef (*t_CFPropertyListCreateWithData)(CFAllocatorRef, CFDataRef, CFOptionFlags, unsigned long*, void**);
 typedef void* CFRunLoopRef;
 typedef CFRunLoopRef (*t_CFRunLoopGetCurrent)(void);
 typedef void (*t_CFRunLoopRun)(void);
@@ -49,6 +71,8 @@ typedef mach_error_t (*t_AMDeviceStartSession)(am_device);
 typedef mach_error_t (*t_AMDeviceStopSession)(am_device);
 typedef CFStringRef (*t_AMDeviceCopyValue)(am_device, CFStringRef, CFStringRef);
 typedef mach_error_t (*t_AMDeviceStartService)(am_device, CFStringRef, int*, void*);
+typedef mach_error_t (*t_AMDeviceSecureStartService)(am_device, CFStringRef, void*, void**);
+typedef int (*t_AMDServiceConnectionGetSocket)(void*);
 typedef afc_error_t (*t_AFCConnectionOpen)(int, unsigned, afc_connection*);
 typedef afc_error_t (*t_AFCConnectionClose)(afc_connection);
 typedef afc_error_t (*t_AFCDirectoryOpen)(afc_connection, const char*, afc_directory*);
@@ -59,11 +83,25 @@ typedef afc_error_t (*t_AFCKeyValueRead)(afc_dictionary, char**, char**);
 typedef afc_error_t (*t_AFCKeyValueClose)(afc_dictionary);
 typedef afc_error_t (*t_AFCFileRefOpen)(afc_connection, const char*, unsigned long long, afc_file_ref*);
 typedef afc_error_t (*t_AFCFileRefRead)(afc_connection, afc_file_ref, void*, size_t*);
+typedef afc_error_t (*t_AFCFileRefWrite)(afc_connection, afc_file_ref, const void*, size_t*);
 typedef afc_error_t (*t_AFCFileRefClose)(afc_connection, afc_file_ref);
+typedef afc_error_t (*t_AFCRemovePath)(afc_connection, const char*);
+typedef afc_error_t (*t_AFCDirectoryCreate)(afc_connection, const char*);
 
 static t_CFStringCreateWithCString pCFStringCreateWithCString;
 static t_CFStringGetCString pCFStringGetCString;
 static t_CFRelease pCFRelease;
+static t_CFGetTypeID pCFGetTypeID;
+static t_CFStringGetTypeID pCFStringGetTypeID;
+static t_CFArrayGetTypeID pCFArrayGetTypeID;
+static t_CFDictionaryGetTypeID pCFDictionaryGetTypeID;
+static t_CFBooleanGetTypeID pCFBooleanGetTypeID;
+static t_CFArrayGetCount pCFArrayGetCount;
+static t_CFArrayGetValueAtIndex pCFArrayGetValueAtIndex;
+static t_CFDictionaryGetValue pCFDictionaryGetValue;
+static t_CFBooleanGetValue pCFBooleanGetValue;
+static t_CFDataCreate pCFDataCreate;
+static t_CFPropertyListCreateWithData pCFPropertyListCreateWithData;
 static t_CFRunLoopGetCurrent pCFRunLoopGetCurrent;
 static t_CFRunLoopRun pCFRunLoopRun;
 static t_CFRunLoopStop pCFRunLoopStop;
@@ -77,6 +115,8 @@ static t_AMDeviceStartSession pAMDeviceStartSession;
 static t_AMDeviceStopSession pAMDeviceStopSession;
 static t_AMDeviceCopyValue pAMDeviceCopyValue;
 static t_AMDeviceStartService pAMDeviceStartService;
+static t_AMDeviceSecureStartService pAMDeviceSecureStartService;
+static t_AMDServiceConnectionGetSocket pAMDServiceConnectionGetSocket;
 static t_AFCConnectionOpen pAFCConnectionOpen;
 static t_AFCConnectionClose pAFCConnectionClose;
 static t_AFCDirectoryOpen pAFCDirectoryOpen;
@@ -87,7 +127,10 @@ static t_AFCKeyValueRead pAFCKeyValueRead;
 static t_AFCKeyValueClose pAFCKeyValueClose;
 static t_AFCFileRefOpen pAFCFileRefOpen;
 static t_AFCFileRefRead pAFCFileRefRead;
+static t_AFCFileRefWrite pAFCFileRefWrite;
 static t_AFCFileRefClose pAFCFileRefClose;
+static t_AFCRemovePath pAFCRemovePath;
+static t_AFCDirectoryCreate pAFCDirectoryCreate;
 
 static HMODULE g_cf, g_md;
 static void* g_notify;
@@ -100,24 +143,52 @@ static BOOL g_appleCsInit=FALSE;
 static BOOL g_loaded=FALSE;
 
 #define APPLE_MAX 8
+#define APPLE_MAX_APPS 256
+#define APPLE_PHOTOS L"Photos"
+#define APPLE_APPS L"Applications"
+#define AFK_ROOT 1
+#define AFK_APPS 2
+#define AFK_AFC 3
+enum {
+	AR_ROOT=0,
+	AR_PHOTOS,
+	AR_PHOTOS_REL,
+	AR_APPS,
+	AR_APP,
+	AR_APP_REL
+};
+struct AppleApp {
+	WCHAR name[128];
+	char bundle[160];
+	BOOL sharing;
+};
 struct ApplePhone {
 	am_device dev;
 	afc_connection afc;
 	int sock;
 	BOOL session;
+	afc_connection appAfc;
+	int appSock;
+	char appBundle[160];
 	WCHAR name[128];
 	WCHAR udid[80];
 	WCHAR ios[40];
 	WCHAR build[40];
 	WCHAR product[40];
+	int napps;
+	AppleApp apps[APPLE_MAX_APPS];
 };
 static ApplePhone g_phones[APPLE_MAX];
 static int g_nphones=0;
+static BOOL g_wsa=FALSE;
 
 struct AppleFind {
 	int magic;
 	int phone;
+	int kind;
+	int index;
 	afc_directory dir;
+	afc_connection conn;
 	char afcPath[1024];
 };
 #define APPLE_FIND_MAGIC 0x41464C44
@@ -236,11 +307,23 @@ static void FillFindFromAfc(afc_connection conn, const char* dirPath, const char
 	}
 }
 
-static BOOL EnsureSession(ApplePhone* p)
+static void CloseAppAfc(ApplePhone* p)
+{
+	if (!p)
+		return;
+	if (p->appAfc && pAFCConnectionClose) {
+		pAFCConnectionClose(p->appAfc);
+		p->appAfc=NULL;
+	}
+	p->appSock=0;
+	p->appBundle[0]=0;
+}
+
+static BOOL EnsureLockdown(ApplePhone* p)
 {
 	if (!p || !p->dev)
 		return FALSE;
-	if (p->session && p->afc)
+	if (p->session)
 		return TRUE;
 	if (pAMDeviceConnect(p->dev)!=0)
 		return FALSE;
@@ -257,13 +340,51 @@ static BOOL EnsureSession(ApplePhone* p)
 		return FALSE;
 	}
 	p->session=TRUE;
-	CFStringRef svc=CfStr("com.apple.afc");
-	int sock=0;
-	if (!svc || pAMDeviceStartService(p->dev, svc, &sock, NULL)!=0) {
-		if (svc) pCFRelease(svc);
+	return TRUE;
+}
+
+static BOOL StartNamedService(ApplePhone* p, const char* name, int* sock)
+{
+	*sock=0;
+	if (!EnsureLockdown(p))
 		return FALSE;
+	CFStringRef svc=CfStr(name);
+	if (!svc)
+		return FALSE;
+	int s=0;
+	if (pAMDeviceStartService && pAMDeviceStartService(p->dev, svc, &s, NULL)==0 && s) {
+		pCFRelease(svc);
+		*sock=s;
+		return TRUE;
+	}
+	if (pAMDeviceSecureStartService && pAMDServiceConnectionGetSocket) {
+		void* conn=NULL;
+		if (pAMDeviceSecureStartService(p->dev, svc, NULL, &conn)==0 && conn) {
+			s=pAMDServiceConnectionGetSocket(conn);
+			if (s) {
+				pCFRelease(svc);
+				*sock=s;
+				return TRUE;
+			}
+		}
 	}
 	pCFRelease(svc);
+	return FALSE;
+}
+
+static BOOL EnsureSession(ApplePhone* p)
+{
+	if (!p || !p->dev)
+		return FALSE;
+	if (p->session && p->afc)
+		return TRUE;
+	if (!EnsureLockdown(p))
+		return FALSE;
+	if (p->afc)
+		return TRUE;
+	int sock=0;
+	if (!StartNamedService(p, "com.apple.afc", &sock))
+		return FALSE;
 	p->sock=sock;
 	afc_connection conn=NULL;
 	if (pAFCConnectionOpen(sock, 0, &conn)!=0 || !conn)
@@ -276,6 +397,7 @@ static void ClosePhone(ApplePhone* p)
 {
 	if (!p)
 		return;
+	CloseAppAfc(p);
 	if (p->afc && pAFCConnectionClose) {
 		pAFCConnectionClose(p->afc);
 		p->afc=NULL;
@@ -286,6 +408,7 @@ static void ClosePhone(ApplePhone* p)
 	}
 	if (p->dev && pAMDeviceDisconnect)
 		pAMDeviceDisconnect(p->dev);
+	p->napps=0;
 }
 
 static ApplePhone* FindPhoneByName(LPCWSTR name)
@@ -563,6 +686,8 @@ static BOOL BindAppleProcs()
 	pAMDeviceStopSession=(t_AMDeviceStopSession)GetProcAddress(g_md, "AMDeviceStopSession");
 	pAMDeviceCopyValue=(t_AMDeviceCopyValue)GetProcAddress(g_md, "AMDeviceCopyValue");
 	pAMDeviceStartService=(t_AMDeviceStartService)GetProcAddress(g_md, "AMDeviceStartService");
+	pAMDeviceSecureStartService=(t_AMDeviceSecureStartService)GetProcAddress(g_md, "AMDeviceSecureStartService");
+	pAMDServiceConnectionGetSocket=(t_AMDServiceConnectionGetSocket)GetProcAddress(g_md, "AMDServiceConnectionGetSocket");
 	pAFCConnectionOpen=(t_AFCConnectionOpen)GetProcAddress(g_md, "AFCConnectionOpen");
 	pAFCConnectionClose=(t_AFCConnectionClose)GetProcAddress(g_md, "AFCConnectionClose");
 	pAFCDirectoryOpen=(t_AFCDirectoryOpen)GetProcAddress(g_md, "AFCDirectoryOpen");
@@ -573,7 +698,21 @@ static BOOL BindAppleProcs()
 	pAFCKeyValueClose=(t_AFCKeyValueClose)GetProcAddress(g_md, "AFCKeyValueClose");
 	pAFCFileRefOpen=(t_AFCFileRefOpen)GetProcAddress(g_md, "AFCFileRefOpen");
 	pAFCFileRefRead=(t_AFCFileRefRead)GetProcAddress(g_md, "AFCFileRefRead");
+	pAFCFileRefWrite=(t_AFCFileRefWrite)GetProcAddress(g_md, "AFCFileRefWrite");
 	pAFCFileRefClose=(t_AFCFileRefClose)GetProcAddress(g_md, "AFCFileRefClose");
+	pAFCRemovePath=(t_AFCRemovePath)GetProcAddress(g_md, "AFCRemovePath");
+	pAFCDirectoryCreate=(t_AFCDirectoryCreate)GetProcAddress(g_md, "AFCDirectoryCreate");
+	pCFGetTypeID=(t_CFGetTypeID)GetProcAddress(g_cf, "CFGetTypeID");
+	pCFStringGetTypeID=(t_CFStringGetTypeID)GetProcAddress(g_cf, "CFStringGetTypeID");
+	pCFArrayGetTypeID=(t_CFArrayGetTypeID)GetProcAddress(g_cf, "CFArrayGetTypeID");
+	pCFDictionaryGetTypeID=(t_CFDictionaryGetTypeID)GetProcAddress(g_cf, "CFDictionaryGetTypeID");
+	pCFBooleanGetTypeID=(t_CFBooleanGetTypeID)GetProcAddress(g_cf, "CFBooleanGetTypeID");
+	pCFArrayGetCount=(t_CFArrayGetCount)GetProcAddress(g_cf, "CFArrayGetCount");
+	pCFArrayGetValueAtIndex=(t_CFArrayGetValueAtIndex)GetProcAddress(g_cf, "CFArrayGetValueAtIndex");
+	pCFDictionaryGetValue=(t_CFDictionaryGetValue)GetProcAddress(g_cf, "CFDictionaryGetValue");
+	pCFBooleanGetValue=(t_CFBooleanGetValue)GetProcAddress(g_cf, "CFBooleanGetValue");
+	pCFDataCreate=(t_CFDataCreate)GetProcAddress(g_cf, "CFDataCreate");
+	pCFPropertyListCreateWithData=(t_CFPropertyListCreateWithData)GetProcAddress(g_cf, "CFPropertyListCreateWithData");
 	return pAMDeviceNotificationSubscribe && pAMDeviceConnect && pAMDeviceCopyValue &&
 		pAFCConnectionOpen && pCFStringCreateWithCString && pCFRunLoopRun;
 }
@@ -617,6 +756,11 @@ static BOOL LoadAppleDlls()
 		return FALSE;
 	if (!BindAppleProcs())
 		return FALSE;
+	if (!g_wsa) {
+		WSADATA wd;
+		if (WSAStartup(MAKEWORD(2, 2), &wd)==0)
+			g_wsa=TRUE;
+	}
 
 	g_loopReady=CreateEventW(NULL, TRUE, FALSE, NULL);
 	g_loopThread=CreateThread(NULL, 0, AppleLoopThread, NULL, 0, NULL);
@@ -714,22 +858,413 @@ BOOL AppleMdFillInfo(LPCWSTR deviceName, PluginDeviceInfo* info)
 	return TRUE;
 }
 
-static void RelToAfc(LPCWSTR rel, char* out, int cch)
+static void ToUtf8Slash(LPCWSTR w, char* u, int cch)
 {
-	char utf8[1024];
-	WideToUtf8(rel ? rel : L"", utf8, 1024);
-	if (!utf8[0]) {
-		strcpy_s(out, cch, "DCIM");
-		return;
-	}
-	for (char* q=utf8; *q; q++) {
+	WideToUtf8(w ? w : L"", u, cch);
+	for (char* q=u; *q; q++) {
 		if (*q=='\\')
 			*q='/';
 	}
-	if (_strnicmp(utf8, "DCIM", 4)!=0)
-		sprintf_s(out, cch, "DCIM/%s", utf8);
-	else
-		strcpy_s(out, cch, utf8);
+}
+
+static void StripSlash(WCHAR* s)
+{
+	size_t n=wcslen(s);
+	while (n>0 && s[n-1]=='\\') {
+		s[n-1]=0;
+		n--;
+	}
+}
+
+static int ParseAppleRel(LPCWSTR rel, WCHAR* appOut, int appcch, char* afcOut, int afccch)
+{
+	if (appOut && appcch>0)
+		appOut[0]=0;
+	if (afcOut && afccch>0)
+		afcOut[0]=0;
+	WCHAR buf[wdirtypemax];
+	wcslcpy(buf, rel ? rel : L"", wdirtypemax);
+	StripSlash(buf);
+	WCHAR* p=buf;
+	if (p[0]=='\\')
+		p++;
+	if (!p[0])
+		return AR_ROOT;
+
+	WCHAR* slash=wcschr(p, '\\');
+	WCHAR first[128];
+	if (slash) {
+		*slash=0;
+		wcslcpy(first, p, 128);
+	} else
+		wcslcpy(first, p, 128);
+
+	if (_wcsicmp(first, APPLE_PHOTOS)==0) {
+		if (!slash || !slash[1])
+			return AR_PHOTOS;
+		ToUtf8Slash(slash+1, afcOut, afccch);
+		char tmp[1024];
+		strcpy_s(tmp, afcOut);
+		sprintf_s(afcOut, afccch, "DCIM/%s", tmp);
+		return AR_PHOTOS_REL;
+	}
+	if (_wcsicmp(first, L"DCIM")==0) {
+		if (!slash || !slash[1]) {
+			strcpy_s(afcOut, afccch, "DCIM");
+			return AR_PHOTOS;
+		}
+		ToUtf8Slash(rel, afcOut, afccch);
+		return AR_PHOTOS_REL;
+	}
+	if (_wcsicmp(first, APPLE_APPS)==0) {
+		if (!slash || !slash[1])
+			return AR_APPS;
+		WCHAR* s2=wcschr(slash+1, '\\');
+		if (!s2) {
+			if (appOut)
+				wcslcpy(appOut, slash+1, appcch);
+			if (afcOut)
+				strcpy_s(afcOut, afccch, "/");
+			return AR_APP;
+		}
+		*s2=0;
+		if (appOut)
+			wcslcpy(appOut, slash+1, appcch);
+		ToUtf8Slash(s2+1, afcOut, afccch);
+		return AR_APP_REL;
+	}
+	ToUtf8Slash(p, afcOut, afccch);
+	char tmp[1024];
+	strcpy_s(tmp, afcOut);
+	sprintf_s(afcOut, afccch, "DCIM/%s", tmp);
+	return AR_PHOTOS_REL;
+}
+
+static void FillDirFd(LPCWSTR name, WIN32_FIND_DATAW* fd)
+{
+	memset(fd, 0, sizeof(*fd));
+	wcslcpy(fd->cFileName, name, MAX_PATH);
+	fd->dwFileAttributes=FILE_ATTRIBUTE_DIRECTORY;
+	fd->ftLastWriteTime.dwHighDateTime=0xFFFFFFFF;
+	fd->ftLastWriteTime.dwLowDateTime=0xFFFFFFFE;
+}
+
+static void SanitizeName(WCHAR* s)
+{
+	for (; *s; s++) {
+		if (*s=='\\' || *s=='/' || *s==':' || *s=='*' || *s=='?' ||
+			*s=='"' || *s=='<' || *s=='>' || *s=='|')
+			*s='_';
+	}
+}
+
+static BOOL SockSendAll(int sock, const void* data, int n)
+{
+	const char* p=(const char*)data;
+	while (n>0) {
+		int s=send(sock, p, n, 0);
+		if (s<=0)
+			return FALSE;
+		p+=s;
+		n-=s;
+	}
+	return TRUE;
+}
+
+static BOOL SockRecvAll(int sock, void* data, int n)
+{
+	char* p=(char*)data;
+	DWORD t=8000;
+	setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (char*)&t, sizeof(t));
+	while (n>0) {
+		int r=recv(sock, p, n, 0);
+		if (r<=0)
+			return FALSE;
+		p+=r;
+		n-=r;
+	}
+	return TRUE;
+}
+
+static BOOL PlistSendXml(int sock, const char* xml)
+{
+	int n=(int)strlen(xml);
+	unsigned int be=htonl((unsigned int)n);
+	if (!SockSendAll(sock, &be, 4))
+		return FALSE;
+	return SockSendAll(sock, xml, n);
+}
+
+static CFTypeRef PlistRecv(int sock)
+{
+	unsigned int be=0;
+	if (!SockRecvAll(sock, &be, 4))
+		return NULL;
+	unsigned int n=ntohl(be);
+	if (n==0 || n>8*1024*1024)
+		return NULL;
+	char* buf=(char*)malloc(n+1);
+	if (!buf)
+		return NULL;
+	if (!SockRecvAll(sock, buf, (int)n)) {
+		free(buf);
+		return NULL;
+	}
+	buf[n]=0;
+	CFTypeRef pl=NULL;
+	if (pCFDataCreate && pCFPropertyListCreateWithData) {
+		CFDataRef d=pCFDataCreate(NULL, (const unsigned char*)buf, (CFIndex)n);
+		if (d) {
+			pl=pCFPropertyListCreateWithData(NULL, d, 0, NULL, NULL);
+			pCFRelease(d);
+		}
+	}
+	free(buf);
+	return pl;
+}
+
+static CFTypeRef DictGet(CFTypeRef d, const char* key)
+{
+	if (!d || !pCFDictionaryGetValue || !pCFGetTypeID || !pCFDictionaryGetTypeID)
+		return NULL;
+	if (pCFGetTypeID(d)!=pCFDictionaryGetTypeID())
+		return NULL;
+	CFStringRef k=CfStr(key);
+	if (!k)
+		return NULL;
+	CFTypeRef v=pCFDictionaryGetValue((CFDictionaryRef)d, k);
+	pCFRelease(k);
+	return v;
+}
+
+static BOOL DictStr(CFTypeRef d, const char* key, WCHAR* out, int cch)
+{
+	out[0]=0;
+	CFTypeRef v=DictGet(d, key);
+	if (!v || !pCFGetTypeID || !pCFStringGetTypeID)
+		return FALSE;
+	if (pCFGetTypeID(v)!=pCFStringGetTypeID())
+		return FALSE;
+	CfToWide((CFStringRef)v, out, cch);
+	return out[0]!=0;
+}
+
+static BOOL DictBool(CFTypeRef d, const char* key)
+{
+	CFTypeRef v=DictGet(d, key);
+	if (!v || !pCFGetTypeID || !pCFBooleanGetTypeID || !pCFBooleanGetValue)
+		return FALSE;
+	if (pCFGetTypeID(v)!=pCFBooleanGetTypeID())
+		return FALSE;
+	return pCFBooleanGetValue((CFBooleanRef)v)!=0;
+}
+
+static void AddAppFromDict(ApplePhone* p, CFTypeRef app)
+{
+	if (!p || !app || p->napps>=APPLE_MAX_APPS)
+		return;
+	WCHAR id[160], name[128];
+	if (!DictStr(app, "CFBundleIdentifier", id, 160) || !id[0])
+		return;
+	if (!DictStr(app, "CFBundleDisplayName", name, 128) || !name[0])
+		DictStr(app, "CFBundleName", name, 128);
+	if (!name[0])
+		wcslcpy(name, id, 128);
+	SanitizeName(name);
+	char bundle[160];
+	WideToUtf8(id, bundle, 160);
+	for (int i=0;i<p->napps;i++) {
+		if (_stricmp(p->apps[i].bundle, bundle)==0)
+			return;
+	}
+	WCHAR unique[128];
+	wcslcpy(unique, name, 128);
+	int extra=2;
+	for (;;) {
+		BOOL clash=FALSE;
+		for (int i=0;i<p->napps;i++) {
+			if (_wcsicmp(p->apps[i].name, unique)==0) {
+				clash=TRUE;
+				break;
+			}
+		}
+		if (!clash)
+			break;
+		swprintf_s(unique, L"%s (%d)", name, extra++);
+	}
+	AppleApp* a=&p->apps[p->napps++];
+	memset(a, 0, sizeof(*a));
+	wcslcpy(a->name, unique, 128);
+	strcpy_s(a->bundle, bundle);
+	a->sharing=DictBool(app, "UIFileSharingEnabled");
+}
+
+static int CmpApps(const void* a, const void* b)
+{
+	const AppleApp* x=(const AppleApp*)a;
+	const AppleApp* y=(const AppleApp*)b;
+	if (x->sharing!=y->sharing)
+		return y->sharing - x->sharing;
+	return _wcsicmp(x->name, y->name);
+}
+
+static BOOL RefreshApps(ApplePhone* p)
+{
+	p->napps=0;
+	if (!pCFPropertyListCreateWithData || !pCFArrayGetCount)
+		return FALSE;
+	int sock=0;
+	if (!StartNamedService(p, "com.apple.mobile.installation_proxy", &sock))
+		return FALSE;
+	const char* xml=
+		"<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+		"<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" "
+		"\"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">"
+		"<plist version=\"1.0\"><dict>"
+		"<key>Command</key><string>Browse</string>"
+		"<key>ClientOptions</key><dict>"
+		"<key>ApplicationType</key><string>User</string>"
+		"<key>ReturnAttributes</key><array>"
+		"<string>CFBundleIdentifier</string>"
+		"<string>CFBundleDisplayName</string>"
+		"<string>CFBundleName</string>"
+		"<string>UIFileSharingEnabled</string>"
+		"</array></dict></dict></plist>";
+	BOOL ok=PlistSendXml(sock, xml);
+	if (ok) {
+		for (int n=0;n<64;n++) {
+			CFTypeRef pl=PlistRecv(sock);
+			if (!pl)
+				break;
+			WCHAR status[64];
+			DictStr(pl, "Status", status, 64);
+			CFTypeRef list=DictGet(pl, "CurrentList");
+			if (list && pCFGetTypeID && pCFArrayGetTypeID &&
+				pCFGetTypeID(list)==pCFArrayGetTypeID()) {
+				CFIndex cnt=pCFArrayGetCount((CFArrayRef)list);
+				for (CFIndex i=0;i<cnt;i++)
+					AddAppFromDict(p, pCFArrayGetValueAtIndex((CFArrayRef)list, i));
+			}
+			BOOL done=_wcsicmp(status, L"Complete")==0;
+			pCFRelease(pl);
+			if (done)
+				break;
+		}
+	}
+	closesocket(sock);
+	if (p->napps>1)
+		qsort(p->apps, p->napps, sizeof(p->apps[0]), CmpApps);
+	return p->napps>0;
+}
+
+static AppleApp* FindAppByName(ApplePhone* p, LPCWSTR name)
+{
+	if (!p || !name)
+		return NULL;
+	for (int i=0;i<p->napps;i++) {
+		if (_wcsicmp(p->apps[i].name, name)==0)
+			return &p->apps[i];
+	}
+	return NULL;
+}
+
+static BOOL HouseArrest(ApplePhone* p, const char* bundle, const char* command, int* sock)
+{
+	*sock=0;
+	if (!StartNamedService(p, "com.apple.mobile.house_arrest", sock))
+		return FALSE;
+	char xml[1024];
+	sprintf_s(xml,
+		"<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+		"<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" "
+		"\"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">"
+		"<plist version=\"1.0\"><dict>"
+		"<key>Command</key><string>%s</string>"
+		"<key>Identifier</key><string>%s</string>"
+		"</dict></plist>", command, bundle);
+	if (!PlistSendXml(*sock, xml)) {
+		closesocket(*sock);
+		*sock=0;
+		return FALSE;
+	}
+	CFTypeRef pl=PlistRecv(*sock);
+	BOOL ok=FALSE;
+	if (pl) {
+		WCHAR err[80], status[80];
+		DictStr(pl, "Error", err, 80);
+		DictStr(pl, "Status", status, 80);
+		ok=(err[0]==0) && (_wcsicmp(status, L"Complete")==0 || status[0]==0);
+		pCFRelease(pl);
+	}
+	if (!ok) {
+		closesocket(*sock);
+		*sock=0;
+	}
+	return ok;
+}
+
+static BOOL EnsureAppAfc(ApplePhone* p, LPCWSTR appName)
+{
+	if (!p)
+		return FALSE;
+	if (p->napps==0)
+		RefreshApps(p);
+	AppleApp* a=FindAppByName(p, appName);
+	if (!a)
+		return FALSE;
+	if (p->appAfc && _stricmp(p->appBundle, a->bundle)==0)
+		return TRUE;
+	CloseAppAfc(p);
+	int sock=0;
+	if (!HouseArrest(p, a->bundle, "VendDocuments", &sock)) {
+		if (!HouseArrest(p, a->bundle, "VendContainer", &sock))
+			return FALSE;
+	}
+	afc_connection conn=NULL;
+	if (pAFCConnectionOpen(sock, 0, &conn)!=0 || !conn) {
+		closesocket(sock);
+		return FALSE;
+	}
+	p->appAfc=conn;
+	p->appSock=sock;
+	strcpy_s(p->appBundle, a->bundle);
+	return TRUE;
+}
+
+static BOOL ResolveAfc(ApplePhone* p, LPCWSTR rel, afc_connection* conn, char* path, int pathcch, BOOL forWrite)
+{
+	WCHAR app[128];
+	int kind=ParseAppleRel(rel, app, 128, path, pathcch);
+	if (kind==AR_ROOT || kind==AR_APPS)
+		return FALSE;
+	if (kind==AR_PHOTOS || kind==AR_PHOTOS_REL) {
+		if (!EnsureSession(p) || !p->afc)
+			return FALSE;
+		*conn=p->afc;
+		if (kind==AR_PHOTOS)
+			strcpy_s(path, pathcch, "DCIM");
+		return TRUE;
+	}
+	if (kind==AR_APP || kind==AR_APP_REL) {
+		if (forWrite && (kind==AR_APP) && (!path[0] || !strcmp(path, "/")))
+			return FALSE;
+		if (!EnsureAppAfc(p, app) || !p->appAfc)
+			return FALSE;
+		*conn=p->appAfc;
+		if (!path[0])
+			strcpy_s(path, pathcch, "/");
+		return TRUE;
+	}
+	return FALSE;
+}
+
+static AppleFind* NewFind(int phone, int kind)
+{
+	AppleFind* f=(AppleFind*)calloc(1, sizeof(AppleFind));
+	f->magic=APPLE_FIND_MAGIC;
+	f->phone=phone;
+	f->kind=kind;
+	return f;
 }
 
 BOOL AppleMdFindFirst(LPCWSTR deviceName, LPCWSTR relPath, WIN32_FIND_DATAW* fd, HANDLE* out)
@@ -737,21 +1272,50 @@ BOOL AppleMdFindFirst(LPCWSTR deviceName, LPCWSTR relPath, WIN32_FIND_DATAW* fd,
 	*out=INVALID_HANDLE_VALUE;
 	AppleLock();
 	ApplePhone* p=FindPhoneByName(deviceName);
-	if (!p || !EnsureSession(p) || !p->afc) {
+	if (!p) {
 		AppleUnlock();
 		return FALSE;
 	}
+	WCHAR app[128];
 	char afcPath[1024];
-	RelToAfc(relPath, afcPath, 1024);
-	afc_directory dir=NULL;
-	if (pAFCDirectoryOpen(p->afc, afcPath, &dir)!=0 || !dir) {
+	int kind=ParseAppleRel(relPath, app, 128, afcPath, 1024);
+	AppleFind* f=NULL;
+
+	if (kind==AR_ROOT) {
+		f=NewFind((int)(p-g_phones), AFK_ROOT);
+		f->index=1;
+		FillDirFd(APPLE_PHOTOS, fd);
+		*out=(HANDLE)f;
+		AppleUnlock();
+		return TRUE;
+	}
+	if (kind==AR_APPS) {
+		RefreshApps(p);
+		if (p->napps==0) {
+			AppleUnlock();
+			return FALSE;
+		}
+		f=NewFind((int)(p-g_phones), AFK_APPS);
+		f->index=1;
+		FillDirFd(p->apps[0].name, fd);
+		*out=(HANDLE)f;
+		AppleUnlock();
+		return TRUE;
+	}
+
+	afc_connection conn=NULL;
+	if (!ResolveAfc(p, relPath, &conn, afcPath, 1024, FALSE) || !conn) {
 		AppleUnlock();
 		return FALSE;
 	}
-	AppleFind* f=(AppleFind*)calloc(1, sizeof(AppleFind));
-	f->magic=APPLE_FIND_MAGIC;
-	f->phone=(int)(p-g_phones);
+	afc_directory dir=NULL;
+	if (pAFCDirectoryOpen(conn, afcPath, &dir)!=0 || !dir) {
+		AppleUnlock();
+		return FALSE;
+	}
+	f=NewFind((int)(p-g_phones), AFK_AFC);
 	f->dir=dir;
+	f->conn=conn;
 	strcpy_s(f->afcPath, afcPath);
 	*out=(HANDLE)f;
 	BOOL ok=AppleMdFindNext(*out, fd);
@@ -769,20 +1333,44 @@ BOOL AppleMdFindNext(HANDLE h, WIN32_FIND_DATAW* fd)
 	if (!f || f->magic!=APPLE_FIND_MAGIC)
 		return FALSE;
 	AppleLock();
-	if (f->phone<0 || f->phone>=g_nphones || !g_phones[f->phone].afc) {
+	if (f->phone<0 || f->phone>=g_nphones) {
 		AppleUnlock();
 		return FALSE;
 	}
-	afc_connection conn=g_phones[f->phone].afc;
+	ApplePhone* p=&g_phones[f->phone];
+	if (f->kind==AFK_ROOT) {
+		if (f->index==1) {
+			FillDirFd(APPLE_APPS, fd);
+			f->index=2;
+			AppleUnlock();
+			return TRUE;
+		}
+		AppleUnlock();
+		return FALSE;
+	}
+	if (f->kind==AFK_APPS) {
+		if (f->index>=p->napps) {
+			AppleUnlock();
+			return FALSE;
+		}
+		FillDirFd(p->apps[f->index].name, fd);
+		f->index++;
+		AppleUnlock();
+		return TRUE;
+	}
+	if (!f->conn) {
+		AppleUnlock();
+		return FALSE;
+	}
 	for (;;) {
 		char* name=NULL;
-		if (pAFCDirectoryRead(conn, f->dir, &name)!=0 || !name || !name[0]) {
+		if (pAFCDirectoryRead(f->conn, f->dir, &name)!=0 || !name || !name[0]) {
 			AppleUnlock();
 			return FALSE;
 		}
 		if (!strcmp(name, ".") || !strcmp(name, ".."))
 			continue;
-		FillFindFromAfc(conn, f->afcPath, name, fd);
+		FillFindFromAfc(f->conn, f->afcPath, name, fd);
 		AppleUnlock();
 		return TRUE;
 	}
@@ -794,8 +1382,8 @@ void AppleMdFindClose(HANDLE h)
 	if (!f || f->magic!=APPLE_FIND_MAGIC)
 		return;
 	AppleLock();
-	if (f->dir && f->phone>=0 && f->phone<g_nphones && g_phones[f->phone].afc && pAFCDirectoryClose)
-		pAFCDirectoryClose(g_phones[f->phone].afc, f->dir);
+	if (f->dir && f->conn && pAFCDirectoryClose)
+		pAFCDirectoryClose(f->conn, f->dir);
 	f->magic=0;
 	free(f);
 	AppleUnlock();
@@ -805,20 +1393,20 @@ int AppleMdGetFile(LPCWSTR deviceName, LPCWSTR relPath, LPCWSTR localPath, ULONG
 {
 	AppleLock();
 	ApplePhone* p=FindPhoneByName(deviceName);
-	if (!p || !EnsureSession(p) || !p->afc) {
+	afc_connection conn=NULL;
+	char afcPath[1024];
+	if (!p || !ResolveAfc(p, relPath, &conn, afcPath, 1024, FALSE) || !conn) {
 		AppleUnlock();
 		return FS_FILE_READERROR;
 	}
-	char afcPath[1024];
-	RelToAfc(relPath, afcPath, 1024);
 	afc_file_ref ref=0;
-	if (pAFCFileRefOpen(p->afc, afcPath, 1, &ref)!=0) {
+	if (pAFCFileRefOpen(conn, afcPath, 1, &ref)!=0) {
 		AppleUnlock();
 		return FS_FILE_NOTFOUND;
 	}
 	HANDLE out=CreateFileT((WCHAR*)localPath, GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_ALWAYS, 0, NULL);
 	if (out==INVALID_HANDLE_VALUE) {
-		pAFCFileRefClose(p->afc, ref);
+		pAFCFileRefClose(conn, ref);
 		AppleUnlock();
 		return FS_FILE_WRITEERROR;
 	}
@@ -826,7 +1414,7 @@ int AppleMdGetFile(LPCWSTR deviceName, LPCWSTR relPath, LPCWSTR localPath, ULONG
 	int result=FS_FILE_OK;
 	for (;;) {
 		size_t n=sizeof(buf);
-		if (pAFCFileRefRead(p->afc, ref, buf, &n)!=0) {
+		if (pAFCFileRefRead(conn, ref, buf, &n)!=0) {
 			result=FS_FILE_READERROR;
 			break;
 		}
@@ -838,7 +1426,7 @@ int AppleMdGetFile(LPCWSTR deviceName, LPCWSTR relPath, LPCWSTR localPath, ULONG
 			break;
 		}
 	}
-	pAFCFileRefClose(p->afc, ref);
+	pAFCFileRefClose(conn, ref);
 	if (mtime && result==FS_FILE_OK &&
 		!(mtime->dwHighDateTime==0xFFFFFFFF))
 		SetFileTime(out, NULL, NULL, mtime);
@@ -846,5 +1434,130 @@ int AppleMdGetFile(LPCWSTR deviceName, LPCWSTR relPath, LPCWSTR localPath, ULONG
 	AppleUnlock();
 	if (result!=FS_FILE_OK)
 		DeleteFileT((WCHAR*)localPath);
+	return result;
+}
+
+static BOOL AfcDeleteTree(afc_connection conn, const char* path)
+{
+	if (!conn || !path || !path[0] || !pAFCRemovePath)
+		return FALSE;
+	if (PathLooksLikeDir(conn, path) && pAFCDirectoryOpen && pAFCDirectoryRead) {
+		afc_directory dir=NULL;
+		if (pAFCDirectoryOpen(conn, path, &dir)==0 && dir) {
+			for (;;) {
+				char* name=NULL;
+				if (pAFCDirectoryRead(conn, dir, &name)!=0 || !name || !name[0])
+					break;
+				if (!strcmp(name, ".") || !strcmp(name, ".."))
+					continue;
+				char child[1024];
+				if (path[0] && strcmp(path, "/")!=0)
+					sprintf_s(child, "%s/%s", path, name);
+				else
+					sprintf_s(child, "/%s", name);
+				AfcDeleteTree(conn, child);
+			}
+			if (pAFCDirectoryClose)
+				pAFCDirectoryClose(conn, dir);
+		}
+	}
+	return pAFCRemovePath(conn, path)==0;
+}
+
+BOOL AppleMdDelete(LPCWSTR deviceName, LPCWSTR relPath)
+{
+	WCHAR app[128];
+	char afcPath[1024];
+	int kind=ParseAppleRel(relPath, app, 128, afcPath, 1024);
+	if (kind==AR_ROOT || kind==AR_PHOTOS || kind==AR_APPS || kind==AR_APP)
+		return FALSE;
+	AppleLock();
+	ApplePhone* p=FindPhoneByName(deviceName);
+	afc_connection conn=NULL;
+	if (!p || !ResolveAfc(p, relPath, &conn, afcPath, 1024, TRUE) || !conn) {
+		AppleUnlock();
+		return FALSE;
+	}
+	BOOL ok=AfcDeleteTree(conn, afcPath);
+	AppleUnlock();
+	return ok;
+}
+
+BOOL AppleMdMkDir(LPCWSTR deviceName, LPCWSTR relPath)
+{
+	WCHAR app[128];
+	char afcPath[1024];
+	int kind=ParseAppleRel(relPath, app, 128, afcPath, 1024);
+	if (kind==AR_ROOT || kind==AR_PHOTOS || kind==AR_APPS || kind==AR_APP)
+		return FALSE;
+	if (!pAFCDirectoryCreate)
+		return FALSE;
+	AppleLock();
+	ApplePhone* p=FindPhoneByName(deviceName);
+	afc_connection conn=NULL;
+	if (!p || !ResolveAfc(p, relPath, &conn, afcPath, 1024, TRUE) || !conn) {
+		AppleUnlock();
+		return FALSE;
+	}
+	BOOL ok=pAFCDirectoryCreate(conn, afcPath)==0;
+	AppleUnlock();
+	return ok;
+}
+
+int AppleMdPutFile(LPCWSTR deviceName, LPCWSTR relPath, LPCWSTR localPath, BOOL overwrite)
+{
+	WCHAR app[128];
+	char afcPath[1024];
+	int kind=ParseAppleRel(relPath, app, 128, afcPath, 1024);
+	if (kind==AR_ROOT || kind==AR_PHOTOS || kind==AR_APPS || kind==AR_APP)
+		return FS_FILE_NOTSUPPORTED;
+	if (!pAFCFileRefWrite)
+		return FS_FILE_NOTSUPPORTED;
+	AppleLock();
+	ApplePhone* p=FindPhoneByName(deviceName);
+	afc_connection conn=NULL;
+	if (!p || !ResolveAfc(p, relPath, &conn, afcPath, 1024, TRUE) || !conn) {
+		AppleUnlock();
+		return FS_FILE_WRITEERROR;
+	}
+	if (!overwrite && pAFCFileInfoOpen) {
+		afc_dictionary dict=NULL;
+		if (pAFCFileInfoOpen(conn, afcPath, &dict)==0 && dict) {
+			if (pAFCKeyValueClose)
+				pAFCKeyValueClose(dict);
+			AppleUnlock();
+			return FS_FILE_EXISTS;
+		}
+	}
+	HANDLE in=CreateFileT((WCHAR*)localPath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+	if (in==INVALID_HANDLE_VALUE) {
+		AppleUnlock();
+		return FS_FILE_READERROR;
+	}
+	afc_file_ref ref=0;
+	if (pAFCFileRefOpen(conn, afcPath, 4, &ref)!=0) {
+		CloseHandle(in);
+		AppleUnlock();
+		return FS_FILE_WRITEERROR;
+	}
+	char buf[64*1024];
+	int result=FS_FILE_OK;
+	for (;;) {
+		DWORD rd=0;
+		if (!ReadFile(in, buf, sizeof(buf), &rd, NULL)) {
+			result=FS_FILE_READERROR;
+			break;
+		}
+		if (rd==0)
+			break;
+		size_t n=rd;
+		if (pAFCFileRefWrite(conn, ref, buf, &n)!=0) {
+			result=FS_FILE_WRITEERROR;
+			break;
+		}
+	}
+	pAFCFileRefClose(conn, ref);
+	CloseHandle(in);
+	AppleUnlock();
 	return result;
 }

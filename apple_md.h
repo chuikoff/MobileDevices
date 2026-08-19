@@ -13,3 +13,6 @@ BOOL AppleMdFindNext(HANDLE h, WIN32_FIND_DATAW* fd);
 void AppleMdFindClose(HANDLE h);
 int AppleMdGetFile(LPCWSTR deviceName, LPCWSTR relPath, LPCWSTR localPath,
 	ULONGLONG totalHint, FILETIME* mtime);
+int AppleMdPutFile(LPCWSTR deviceName, LPCWSTR relPath, LPCWSTR localPath, BOOL overwrite);
+BOOL AppleMdDelete(LPCWSTR deviceName, LPCWSTR relPath);
+BOOL AppleMdMkDir(LPCWSTR deviceName, LPCWSTR relPath);

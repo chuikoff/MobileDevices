@@ -1,4 +1,4 @@
-MTP Devices plugin v2.1.2
+MTP Devices plugin v2.2.0
 =======================
 Modified from Windows Media Audio 2 (wpdplug) by Christian Ghisler.
 
@@ -38,6 +38,9 @@ read; new settings are stored under [MTPDevices].
 
 History
 =======
+20260819 Release v2.2.0
+20260819 Added: iPhone Photos and Applications folders (app documents via house_arrest, like iMazing/3uTools)
+20260819 Added: copy/delete app files on iPhone; separate Android and iPhone icons
 20260819 Release v2.1.2
 20260819 Changed: plugin icon restyled to Windows 11 Fluent (phone on rounded tile)
 20260819 Release v2.1.1

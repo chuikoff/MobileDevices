@@ -4,6 +4,8 @@
 //
 #define IDI_ICON1                       101
 #define IDD_CONNECTIONSETTINGS          102
+#define IDI_ANDROID                     103
+#define IDI_IPHONE                      104
 #define IDC_LOCALTIMENEW                1001
 #define IDC_LOCALTIME_NEW               1001
 #define IDC_UNIVERSALTIME               1002
@@ -20,7 +22,7 @@
 // 
 #ifdef APSTUDIO_INVOKED
 #ifndef APSTUDIO_READONLY_SYMBOLS
-#define _APS_NEXT_RESOURCE_VALUE        103
+#define _APS_NEXT_RESOURCE_VALUE        105
 #define _APS_NEXT_COMMAND_VALUE         40001
 #define _APS_NEXT_CONTROL_VALUE         1011
 #define _APS_NEXT_SYMED_VALUE           101
