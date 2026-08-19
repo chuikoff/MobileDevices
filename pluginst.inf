@@ -1,0 +1,6 @@
+[plugininstall]
+description=MTP Devices - access phones, players and cameras via MTP
+type=wfx
+file=mtpdevices.wfx
+defaultdir=MTPDevices
+version=1.4.0
