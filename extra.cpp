@@ -288,26 +288,22 @@ void __stdcall FsContentStopGetValueW(WCHAR* FileName)
 
 BOOL __stdcall FsContentGetDefaultView(char* ViewContents,char* ViewHeaders,char* ViewWidths,char* ViewOptions,int maxlen)
 {
-	if (ViewContents)
-		lstrcpynA(ViewContents,"[=<fs>.Type]\\n[=<fs>.Title]\\n[=<fs>.Artist]\\n[=<fs>.Album]\\n[=<fs>.Duration]",maxlen);
-	if (ViewHeaders)
-		lstrcpynA(ViewHeaders,"Type\\nTitle\\nArtist\\nAlbum\\nDuration",maxlen);
-	if (ViewWidths)
-		lstrcpynA(ViewWidths,"150,-40,55,90,90,80,70",maxlen);
-	if (ViewOptions)
-		lstrcpynA(ViewOptions,"-1|0",maxlen);
-	return TRUE;
+	UNREFERENCED_PARAMETER(ViewContents);
+	UNREFERENCED_PARAMETER(ViewHeaders);
+	UNREFERENCED_PARAMETER(ViewWidths);
+	UNREFERENCED_PARAMETER(ViewOptions);
+	UNREFERENCED_PARAMETER(maxlen);
+	return FALSE;
 }
 
 BOOL __stdcall FsContentGetDefaultViewW(WCHAR* ViewContents,WCHAR* ViewHeaders,WCHAR* ViewWidths,WCHAR* ViewOptions,int maxlen)
 {
-	char c[1024],h[512],w[128],o[32];
-	FsContentGetDefaultView(c,h,w,o,1024);
-	awlcopy(ViewContents,c,maxlen-1);
-	awlcopy(ViewHeaders,h,maxlen-1);
-	awlcopy(ViewWidths,w,maxlen-1);
-	awlcopy(ViewOptions,o,maxlen-1);
-	return TRUE;
+	UNREFERENCED_PARAMETER(ViewContents);
+	UNREFERENCED_PARAMETER(ViewHeaders);
+	UNREFERENCED_PARAMETER(ViewWidths);
+	UNREFERENCED_PARAMETER(ViewOptions);
+	UNREFERENCED_PARAMETER(maxlen);
+	return FALSE;
 }
 
 static HRESULT CopyToMemoryStream(IStream* src, IStream** dst)

@@ -17,113 +17,29 @@
 #undef APSTUDIO_READONLY_SYMBOLS
 
 /////////////////////////////////////////////////////////////////////////////
-// Deutsch (neutral) resources
+// Neutral resources (strings applied in code: English / Russian)
 
-#if !defined(AFX_RESOURCE_DLL) || defined(AFX_TARG_DEU)
 #ifdef _WIN32
-LANGUAGE LANG_GERMAN, SUBLANG_GERMAN
-#pragma code_page(1252)
-#endif //_WIN32
+LANGUAGE LANG_NEUTRAL, SUBLANG_NEUTRAL
+#pragma code_page(65001)
+#endif
 
-/////////////////////////////////////////////////////////////////////////////
-//
-// Dialog
-//
-
-IDD_CONNECTIONSETTINGS DIALOGEX 0, 0, 221, 150
-STYLE DS_SETFONT | DS_MODALFRAME | DS_3DLOOK | DS_FIXEDSYS | DS_CENTER | WS_CAPTION | WS_SYSMENU
-CAPTION "Ger�teeinstellungen"
+IDD_CONNECTIONSETTINGS DIALOGEX 0, 0, 300, 200
+STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "MTP Devices"
 FONT 9, "Segoe UI", 400, 0, 0x1
 BEGIN
-    GROUPBOX        "Vom Ger�t gesendetes Dateidatum",IDC_STATIC,7,7,207,121
-    CONTROL         "Lokalzeit, neue Umwandlungsmethode (Android)",IDC_LOCALTIME_NEW,
-                    "Button",BS_AUTORADIOBUTTON,12,22,202,10
-    CONTROL         "Lokalzeit, alte Umwandlungsmethode (gewisse mp3-Player)",IDC_LOCALTIME_OLD,
-                    "Button",BS_AUTORADIOBUTTON,12,36,202,10
-    CONTROL         "Universalzeit UTC (gewisse mp3-Player)",IDC_UNIVERSALTIME,
-                    "Button",BS_AUTORADIOBUTTON,12,50,202,10
-    LTEXT           "Hinweis: Um herauszufinden, welches Format von Ihrem Ger�t gesendet wird, laden Sie eine Datei hoch und pr�fen Sie, ob der Zeitstempel korrekt ist. Bei den meisten Ger�ten ist es die aktuelle Uhrzeit.",IDC_STATIC,12,64,202,32
-    LTEXT           "Die Konvertierungsmethode hat nur einen Einfluss auf Dateien mit einem Datum w�hrend einer anderen Zeitzone (z. B. im Sommer erstellte Datei, im Winter verwendet).",IDC_STATIC,12,96,202,32
-    DEFPUSHBUTTON   "OK",IDOK,111,129,50,14
-    PUSHBUTTON      "Abbrechen",IDCANCEL,164,129,50,14
+    LTEXT           "Language",IDC_LANG_LABEL,12,10,80,10
+    COMBOBOX        IDC_LANGUAGE,96,8,196,80,CBS_DROPDOWNLIST | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP
+    GROUPBOX        "Time",IDC_TIME_GROUP,7,28,286,132
+    CONTROL         "Local new",IDC_LOCALTIME_NEW,"Button",BS_AUTORADIOBUTTON | WS_GROUP,12,44,276,10
+    CONTROL         "Local old",IDC_LOCALTIME_OLD,"Button",BS_AUTORADIOBUTTON,12,58,276,10
+    CONTROL         "UTC",IDC_UNIVERSALTIME,"Button",BS_AUTORADIOBUTTON,12,72,276,10
+    LTEXT           "hint1",IDC_HINT1,12,88,276,34
+    LTEXT           "hint2",IDC_HINT2,12,124,276,30
+    DEFPUSHBUTTON   "OK",IDOK,186,178,50,14
+    PUSHBUTTON      "Cancel",IDCANCEL,243,178,50,14
 END
-
-
-/////////////////////////////////////////////////////////////////////////////
-//
-// DESIGNINFO
-//
-
-#ifdef APSTUDIO_INVOKED
-GUIDELINES DESIGNINFO 
-BEGIN
-    IDD_CONNECTIONSETTINGS, DIALOG
-    BEGIN
-        LEFTMARGIN, 7
-        RIGHTMARGIN, 214
-        TOPMARGIN, 7
-        BOTTOMMARGIN, 143
-    END
-END
-#endif    // APSTUDIO_INVOKED
-
-#endif    // Deutsch (neutral) resources
-/////////////////////////////////////////////////////////////////////////////
-
-
-/////////////////////////////////////////////////////////////////////////////
-// Englisch (neutral) resources
-
-#if !defined(AFX_RESOURCE_DLL) || defined(AFX_TARG_ENU)
-#ifdef _WIN32
-LANGUAGE LANG_ENGLISH, SUBLANG_ENGLISH_US
-#pragma code_page(1252)
-#endif //_WIN32
-
-/////////////////////////////////////////////////////////////////////////////
-//
-// Dialog
-//
-
-IDD_CONNECTIONSETTINGS DIALOGEX 0, 0, 209, 150
-STYLE DS_SETFONT | DS_MODALFRAME | DS_3DLOOK | DS_FIXEDSYS | DS_CENTER | WS_CAPTION | WS_SYSMENU
-CAPTION "Device Settings"
-FONT 9, "Segoe UI", 400, 0, 0x1
-BEGIN
-    GROUPBOX        "File time sent by device",IDC_STATIC,7,7,195,121
-    CONTROL         "Local time, new conversion method (Android)",IDC_LOCALTIME_NEW,
-                    "Button",BS_AUTORADIOBUTTON,12,22,190,10
-    CONTROL         "Local time, old conversion method (some mp3 players)",IDC_LOCALTIME_OLD,
-                    "Button",BS_AUTORADIOBUTTON,12,36,190,10
-    CONTROL         "Universal time UTC (some mp3 players)",IDC_UNIVERSALTIME,
-                    "Button",BS_AUTORADIOBUTTON,12,50,190,10
-    LTEXT           "Hint: To find out what format is sent by your device, upload a file and check whether the timestamp is correct. On most devices it will be the current time.",IDC_STATIC,12,64,190,32
-    LTEXT           "The conversion method only has an influcence on files with a date during a different time zone difference period (e.g. file created in Summer, used in Winter).",IDC_STATIC,12,96,190,32
-    DEFPUSHBUTTON   "OK",IDOK,97,129,50,14
-    PUSHBUTTON      "Cancel",IDCANCEL,152,129,50,14
-END
-
-
-/////////////////////////////////////////////////////////////////////////////
-//
-// DESIGNINFO
-//
-
-#ifdef APSTUDIO_INVOKED
-GUIDELINES DESIGNINFO 
-BEGIN
-    IDD_CONNECTIONSETTINGS, DIALOG
-    BEGIN
-        LEFTMARGIN, 7
-        RIGHTMARGIN, 202
-        TOPMARGIN, 7
-        BOTTOMMARGIN, 143
-    END
-END
-#endif    // APSTUDIO_INVOKED
-
-#endif    // Englisch (neutral) resources
-/////////////////////////////////////////////////////////////////////////////
 
 
 /////////////////////////////////////////////////////////////////////////////
@@ -180,8 +96,8 @@ IDI_ICON1               ICON                    "ICONROOT.ICO"
 //
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 2,0,0,1
- PRODUCTVERSION 2,0,0,1
+ FILEVERSION 2,0,0,2
+ PRODUCTVERSION 2,0,0,2
  FILEFLAGSMASK 0x3fL
 #ifdef _DEBUG
  FILEFLAGS 0x1L
@@ -198,12 +114,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "Ghisler Software GmbH"
             VALUE "FileDescription", "MTP Devices - Total Commander WPD/MTP plugin (modified from MediaAudio2)"
-            VALUE "FileVersion", "2.0.1.0"
+            VALUE "FileVersion", "2.0.2.0"
             VALUE "InternalName", "mtpdevices"
             VALUE "LegalCopyright", "Copyright (C) 2011-2018 Christian Ghisler, Ghisler Software GmbH. Modifications (C) 2026. BSD-3-Clause."
             VALUE "OriginalFilename", "mtpdevices.wfx"
             VALUE "ProductName", "MTP Devices"
-            VALUE "ProductVersion", "2.0.1.0"
+            VALUE "ProductVersion", "2.0.2.0"
         END
     END
     BLOCK "VarFileInfo"

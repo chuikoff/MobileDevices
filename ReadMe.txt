@@ -1,4 +1,4 @@
-MTP Devices plugin v2.0.1
+MTP Devices plugin v2.0.2
 =======================
 Modified from Windows Media Audio 2 (wpdplug) by Christian Ghisler.
 
@@ -38,6 +38,9 @@ read; new settings are stored under [MTPDevices].
 
 History
 =======
+20260819 Release v2.0.2
+20260819 Added: Settings dialog language switch (English / Русский)
+20260819 Changed: Default file list uses standard Total Commander columns (name, size, date)
 20260819 Release v2.0.1
 20260819 Fixed: Opening a device / device root could block ~20s (bulk properties wait + reconnect on every plugin-root listing)
 20260819 Release v2.0
