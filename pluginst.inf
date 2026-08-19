@@ -3,4 +3,4 @@ description=MTP Devices - access phones, players and cameras via MTP
 type=wfx
 file=mtpdevices.wfx
 defaultdir=MTPDevices
-version=2.2.1
+version=2.2.2

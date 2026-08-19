@@ -1,4 +1,4 @@
-MTP Devices plugin v2.2.1
+MTP Devices plugin v2.2.2
 =======================
 Modified from Windows Media Audio 2 (wpdplug) by Christian Ghisler.
 
@@ -38,6 +38,8 @@ read; new settings are stored under [MTPDevices].
 
 History
 =======
+20260819 Release v2.2.2
+20260819 Changed: iPhone icon is a pineapple; multi-size icons (16–256) for thumbnail view
 20260819 Release v2.2.1
 20260819 Changed: Applications lists only apps with Files/File Sharing access; show that app's Documents
 20260819 Release v2.2.0

@@ -439,23 +439,34 @@ int __stdcall FsExtractCustomIcon(char* RemoteName,int ExtractFlags,HICON* TheIc
 	return FsExtractCustomIconW(awfilenamecopy(nameW,RemoteName),ExtractFlags,TheIcon);
 }
 
+static int PluginIconPx(int ExtractFlags)
+{
+	if (ExtractFlags & FS_ICONFLAG_SMALL) {
+		int w=GetSystemMetrics(SM_CXSMICON);
+		return w>0 ? w : 16;
+	}
+	/* Thumbnail / large view: give TC a 256px image so it is not a stretched 32px icon. */
+	return 256;
+}
+
+static int LoadPluginIcon(int id, int ExtractFlags, HICON* TheIcon)
+{
+	int wh=PluginIconPx(ExtractFlags);
+	*TheIcon=(HICON)LoadImage(hInst,MAKEINTRESOURCE(id),IMAGE_ICON,wh,wh,LR_DEFAULTCOLOR);
+	if (!*TheIcon)
+		return FS_ICON_USEDEFAULT;
+	return FS_ICON_EXTRACTED_DESTROY;
+}
+
 int __stdcall FsExtractCustomIconW(WCHAR* RemoteName,int ExtractFlags,HICON* TheIcon)
 {
 	if (!TheIcon || !RemoteName)
 		return FS_ICON_USEDEFAULT;
 	*TheIcon=NULL;
-	int wh=(ExtractFlags & FS_ICONFLAG_SMALL)
-		? GetSystemMetrics(SM_CXSMICON)
-		: GetSystemMetrics(SM_CXICON);
-	if (wh<=0)
-		wh=(ExtractFlags & FS_ICONFLAG_SMALL) ? 16 : 32;
 
 	BOOL isRoot=(RemoteName[0]==0) || (RemoteName[0]=='\\' && RemoteName[1]==0);
-	if (isRoot) {
-		*TheIcon=(HICON)LoadImage(hInst,MAKEINTRESOURCE(IDI_ICON1),IMAGE_ICON,wh,wh,
-			LR_DEFAULTCOLOR | LR_SHARED);
-		return *TheIcon ? FS_ICON_EXTRACTED : FS_ICON_USEDEFAULT;
-	}
+	if (isRoot)
+		return LoadPluginIcon(IDI_ICON1, ExtractFlags, TheIcon);
 
 	WCHAR dev[MAX_PATH];
 	const WCHAR* p=RemoteName[0]=='\\' ? RemoteName+1 : RemoteName;
@@ -466,14 +477,9 @@ int __stdcall FsExtractCustomIconW(WCHAR* RemoteName,int ExtractFlags,HICON* The
 			return FS_ICON_USEDEFAULT;
 		sl[0]=0;
 	}
-	if (!dev[0]) {
-		*TheIcon=(HICON)LoadImage(hInst,MAKEINTRESOURCE(IDI_ICON1),IMAGE_ICON,wh,wh,
-			LR_DEFAULTCOLOR | LR_SHARED);
-		return *TheIcon ? FS_ICON_EXTRACTED : FS_ICON_USEDEFAULT;
-	}
+	if (!dev[0])
+		return LoadPluginIcon(IDI_ICON1, ExtractFlags, TheIcon);
 
 	int id=AppleMdIsDeviceName(dev) ? IDI_IPHONE : IDI_ANDROID;
-	*TheIcon=(HICON)LoadImage(hInst,MAKEINTRESOURCE(id),IMAGE_ICON,wh,wh,
-		LR_DEFAULTCOLOR | LR_SHARED);
-	return *TheIcon ? FS_ICON_EXTRACTED : FS_ICON_USEDEFAULT;
+	return LoadPluginIcon(id, ExtractFlags, TheIcon);
 }
