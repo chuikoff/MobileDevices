@@ -1,6 +1,7 @@
 #include <windows.h>
 #include <stdio.h>
 #include <shlobj.h>
+#include <tlhelp32.h>
 #include "apple_md.h"
 #include "cunicode.h"
 #include "fsplugin.h"
@@ -34,7 +35,12 @@ typedef void (*am_device_notification_callback)(am_device_notification_callback_
 typedef CFStringRef (*t_CFStringCreateWithCString)(CFAllocatorRef, const char*, CFStringEncoding);
 typedef unsigned char (*t_CFStringGetCString)(CFStringRef, char*, CFIndex, CFStringEncoding);
 typedef void (*t_CFRelease)(CFTypeRef);
+typedef void* CFRunLoopRef;
+typedef CFRunLoopRef (*t_CFRunLoopGetCurrent)(void);
+typedef void (*t_CFRunLoopRun)(void);
+typedef void (*t_CFRunLoopStop)(CFRunLoopRef);
 typedef mach_error_t (*t_AMDeviceNotificationSubscribe)(am_device_notification_callback, unsigned, unsigned, void*, void**);
+typedef mach_error_t (*t_AMDeviceNotificationUnsubscribe)(void*);
 typedef mach_error_t (*t_AMDeviceConnect)(am_device);
 typedef mach_error_t (*t_AMDeviceDisconnect)(am_device);
 typedef int (*t_AMDeviceIsPaired)(am_device);
@@ -58,7 +64,11 @@ typedef afc_error_t (*t_AFCFileRefClose)(afc_connection, afc_file_ref);
 static t_CFStringCreateWithCString pCFStringCreateWithCString;
 static t_CFStringGetCString pCFStringGetCString;
 static t_CFRelease pCFRelease;
+static t_CFRunLoopGetCurrent pCFRunLoopGetCurrent;
+static t_CFRunLoopRun pCFRunLoopRun;
+static t_CFRunLoopStop pCFRunLoopStop;
 static t_AMDeviceNotificationSubscribe pAMDeviceNotificationSubscribe;
+static t_AMDeviceNotificationUnsubscribe pAMDeviceNotificationUnsubscribe;
 static t_AMDeviceConnect pAMDeviceConnect;
 static t_AMDeviceDisconnect pAMDeviceDisconnect;
 static t_AMDeviceIsPaired pAMDeviceIsPaired;
@@ -81,6 +91,10 @@ static t_AFCFileRefClose pAFCFileRefClose;
 
 static HMODULE g_cf, g_md;
 static void* g_notify;
+static CFRunLoopRef g_runLoop;
+static HANDLE g_loopThread=NULL;
+static HANDLE g_loopReady=NULL;
+static volatile LONG g_loopStop=0;
 static CRITICAL_SECTION g_appleCs;
 static BOOL g_appleCsInit=FALSE;
 static BOOL g_loaded=FALSE;
@@ -311,17 +325,24 @@ static void OnAppleNotify(am_device_notification_callback_info* info, void*)
 		CopyValue(info->dev, "ProductVersion", p->ios, 40);
 		CopyValue(info->dev, "BuildVersion", p->build, 40);
 		CopyValue(info->dev, "ProductType", p->product, 40);
-		WCHAR ptype[40];
-		wcslcpy(ptype, p->product, 40);
-		if (ptype[0] && wcsstr(ptype, L"iPhone")==NULL && wcsstr(ptype, L"iPad")==NULL &&
-			wcsstr(ptype, L"iPod")==NULL) {
+		WCHAR dclass[40];
+		CopyValue(info->dev, "DeviceClass", dclass, 40);
+		BOOL isPhone=FALSE;
+		if (!p->product[0] && !dclass[0])
+			isPhone=TRUE;
+		else if (wcsstr(p->product, L"iPhone") || wcsstr(p->product, L"iPad") || wcsstr(p->product, L"iPod") ||
+			wcsstr(dclass, L"iPhone") || wcsstr(dclass, L"iPad") || wcsstr(dclass, L"iPod"))
+			isPhone=TRUE;
+		if (!isPhone) {
 			pAMDeviceDisconnect(info->dev);
 			memset(p, 0, sizeof(*p));
 			AppleUnlock();
 			return;
 		}
 		if (!p->name[0]) {
-			if (p->product[0])
+			if (dclass[0])
+				wcslcpy(p->name, dclass, 128);
+			else if (p->product[0])
 				wcslcpy(p->name, p->product, 128);
 			else
 				wcslcpy(p->name, L"iPhone", 128);
@@ -356,84 +377,184 @@ static BOOL DirExistsW(LPCWSTR p)
 	return (a!=INVALID_FILE_ATTRIBUTES) && (a & FILE_ATTRIBUTE_DIRECTORY);
 }
 
-static BOOL FindDirPattern(LPCWSTR parent, LPCWSTR pat, WCHAR* out, int cch)
+static BOOL FileExistsW(LPCWSTR p)
 {
+	DWORD a=GetFileAttributesW(p);
+	return a!=INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+static void EnsureDirW(LPCWSTR path)
+{
+	WCHAR tmp[MAX_PATH];
+	wcslcpy(tmp, path, MAX_PATH);
+	for (WCHAR* p=tmp+3; *p; p++) {
+		if (*p=='\\') {
+			*p=0;
+			CreateDirectoryW(tmp, NULL);
+			*p='\\';
+		}
+	}
+	CreateDirectoryW(tmp, NULL);
+}
+
+static BOOL GetProcessDir(LPCWSTR exeName, WCHAR* dir, int cch)
+{
+	HANDLE snap=CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+	if (snap==INVALID_HANDLE_VALUE)
+		return FALSE;
+	PROCESSENTRY32W pe;
+	memset(&pe, 0, sizeof(pe));
+	pe.dwSize=sizeof(pe);
+	BOOL ok=FALSE;
+	if (Process32FirstW(snap, &pe)) {
+		do {
+			if (_wcsicmp(pe.szExeFile, exeName)!=0)
+				continue;
+			HANDLE hp=OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pe.th32ProcessID);
+			if (!hp)
+				continue;
+			WCHAR path[MAX_PATH];
+			DWORD n=MAX_PATH;
+			if (QueryFullProcessImageNameW(hp, 0, path, &n)) {
+				WCHAR* slash=wcsrchr(path, '\\');
+				if (slash) {
+					*slash=0;
+					wcslcpy(dir, path, cch);
+					ok=TRUE;
+				}
+			}
+			CloseHandle(hp);
+			if (ok)
+				break;
+		} while (Process32NextW(snap, &pe));
+	}
+	CloseHandle(snap);
+	return ok;
+}
+
+static BOOL ApplePkgLooksValid(LPCWSTR pkg)
+{
+#ifdef _WIN64
+	WCHAR a[MAX_PATH], b[MAX_PATH];
+	swprintf_s(a, L"%s\\MobileDevice.dll", pkg);
+	swprintf_s(b, L"%s\\CoreFoundation.dll", pkg);
+	return FileExistsW(a) && FileExistsW(b);
+#else
+	WCHAR a[MAX_PATH], b[MAX_PATH];
+	swprintf_s(a, L"%s\\AMDS32\\MobileDevice.dll", pkg);
+	swprintf_s(b, L"%s\\VFS\\ProgramFilesCommonX86\\Apple\\Apple Application Support\\CoreFoundation.dll", pkg);
+	return FileExistsW(a) && FileExistsW(b);
+#endif
+}
+
+static BOOL FindApplePackage(WCHAR* pkg, int cch)
+{
+	if (GetProcessDir(L"AppleMobileDeviceProcess.exe", pkg, cch) && ApplePkgLooksValid(pkg))
+		return TRUE;
+	WCHAR pf[MAX_PATH], apps[MAX_PATH];
+	if (!GetEnvironmentVariableW(L"ProgramFiles", pf, MAX_PATH))
+		return FALSE;
+	swprintf_s(apps, L"%s\\WindowsApps", pf);
 	WCHAR spec[MAX_PATH];
-	swprintf_s(spec, L"%s\\%s", parent, pat);
+	swprintf_s(spec, L"%s\\AppleInc.AppleDevices_*", apps);
 	WIN32_FIND_DATAW fd;
 	HANDLE h=FindFirstFileW(spec, &fd);
 	if (h==INVALID_HANDLE_VALUE)
 		return FALSE;
+	BOOL ok=FALSE;
 	do {
-		if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-			swprintf_s(out, cch, L"%s\\%s", parent, fd.cFileName);
-			FindClose(h);
-			return TRUE;
+		if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
+			continue;
+		if (wcsstr(fd.cFileName, L"_neutral_"))
+			continue;
+		swprintf_s(pkg, cch, L"%s\\%s", apps, fd.cFileName);
+		if (ApplePkgLooksValid(pkg)) {
+			ok=TRUE;
+			break;
 		}
 	} while (FindNextFileW(h, &fd));
 	FindClose(h);
-	return FALSE;
+	return ok;
 }
 
-static BOOL LoadAppleDlls()
+static BOOL CopyOneDll(LPCWSTR srcDir, LPCWSTR name, LPCWSTR dstDir)
 {
-	if (g_loaded)
-		return g_md!=NULL;
-	g_loaded=TRUE;
-	if (!g_appleCsInit) {
-		InitializeCriticalSection(&g_appleCs);
-		g_appleCsInit=TRUE;
-	}
-	WCHAR pf[MAX_PATH];
-	GetEnvironmentVariableW(L"ProgramFiles", pf, MAX_PATH);
-	WCHAR apps[MAX_PATH], aas[MAX_PATH], amds32[MAX_PATH], mds[MAX_PATH];
-	swprintf_s(apps, L"%s\\WindowsApps", pf);
-	aas[0]=0; amds32[0]=0;
-	WCHAR pkg[MAX_PATH];
-	if (FindDirPattern(apps, L"AppleInc.AppleDevices_*", pkg, MAX_PATH)) {
-		swprintf_s(aas, L"%s\\VFS\\ProgramFilesCommonX86\\Apple\\Apple Application Support", pkg);
-		swprintf_s(amds32, L"%s\\AMDS32", pkg);
-		if (!DirExistsW(aas))
-			aas[0]=0;
-		if (!DirExistsW(amds32))
-			amds32[0]=0;
-	}
-	swprintf_s(mds, L"%s\\Common Files\\Apple\\Mobile Device Support", pf);
-	HMODULE k32=GetModuleHandleW(L"kernel32.dll");
-	typedef PVOID (WINAPI *t_AddDllDirectory)(PCWSTR);
-	typedef BOOL (WINAPI *t_SetDefaultDllDirectories)(DWORD);
-	t_AddDllDirectory pAdd=(t_AddDllDirectory)GetProcAddress(k32, "AddDllDirectory");
-	t_SetDefaultDllDirectories pSet=(t_SetDefaultDllDirectories)GetProcAddress(k32, "SetDefaultDllDirectories");
-	if (pSet)
-		pSet(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS | LOAD_LIBRARY_SEARCH_USER_DIRS);
-	if (pAdd) {
-		if (aas[0]) pAdd(aas);
-		if (amds32[0]) pAdd(amds32);
-		if (DirExistsW(mds)) pAdd(mds);
-	}
-	if (aas[0]) {
-		WCHAR cf[MAX_PATH];
-		swprintf_s(cf, L"%s\\CoreFoundation.dll", aas);
-		g_cf=LoadLibraryExW(cf, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
-	}
-	if (!g_cf)
-		g_cf=LoadLibraryW(L"CoreFoundation.dll");
-	WCHAR mdpath[MAX_PATH];
-	mdpath[0]=0;
-	if (amds32[0]) {
-		swprintf_s(mdpath, L"%s\\MobileDevice.dll", amds32);
-		g_md=LoadLibraryExW(mdpath, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
-	}
-	if (!g_md && DirExistsW(mds)) {
-		swprintf_s(mdpath, L"%s\\iTunesMobileDevice.dll", mds);
-		g_md=LoadLibraryExW(mdpath, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
-	}
-	if (!g_cf || !g_md)
+	WCHAR src[MAX_PATH], dst[MAX_PATH];
+	swprintf_s(src, L"%s\\%s", srcDir, name);
+	swprintf_s(dst, L"%s\\%s", dstDir, name);
+	if (!FileExistsW(src))
 		return FALSE;
+	WIN32_FILE_ATTRIBUTE_DATA sa, da;
+	if (GetFileAttributesExW(dst, GetFileExInfoStandard, &da) &&
+		GetFileAttributesExW(src, GetFileExInfoStandard, &sa) &&
+		sa.nFileSizeLow==da.nFileSizeLow && sa.nFileSizeHigh==da.nFileSizeHigh &&
+		CompareFileTime(&sa.ftLastWriteTime, &da.ftLastWriteTime)==0)
+		return TRUE;
+	return CopyFileW(src, dst, FALSE)!=0;
+}
+
+static BOOL StageAppleDlls(LPCWSTR pkg, WCHAR* dest, int destcch)
+{
+	WCHAR local[MAX_PATH];
+	if (!GetEnvironmentVariableW(L"LOCALAPPDATA", local, MAX_PATH) || !local[0])
+		return FALSE;
+#ifdef _WIN64
+	swprintf_s(dest, destcch, L"%s\\MTPDevices\\amds64", local);
+#else
+	swprintf_s(dest, destcch, L"%s\\MTPDevices\\amds32", local);
+#endif
+	EnsureDirW(dest);
+	static const WCHAR* names[]={
+		L"ASL.dll", L"CFNetwork.dll", L"CoreFoundation.dll", L"MobileDevice.dll",
+		L"objc.dll", L"pthreadVC2.dll", L"libdispatch.dll", L"zlib1.dll", L"zlib.dll",
+		L"icudt62.dll", L"libicuin.dll", L"libicuuc.dll", L"icui18n.dll", L"icuuc.dll",
+		L"SQLite3.dll", L"ssl-46.dll", L"crypto-44.dll", L"libxml2.dll", L"libxslt.dll",
+		L"libtidy.dll", L"Foundation.dll", L"AirTrafficHost.dll", L"dnssd.dll",
+		L"mDNSResponderDLL.dll", L"DeviceLink.dll", L"SyncServices.dll"
+	};
+#ifdef _WIN64
+	for (int i=0;i<(int)(sizeof(names)/sizeof(names[0]));i++)
+		CopyOneDll(pkg, names[i], dest);
+#else
+	WCHAR aas[MAX_PATH], amds32[MAX_PATH];
+	swprintf_s(aas, L"%s\\VFS\\ProgramFilesCommonX86\\Apple\\Apple Application Support", pkg);
+	swprintf_s(amds32, L"%s\\AMDS32", pkg);
+	for (int i=0;i<(int)(sizeof(names)/sizeof(names[0]));i++) {
+		if (!CopyOneDll(aas, names[i], dest))
+			CopyOneDll(amds32, names[i], dest);
+	}
+#endif
+	WCHAR md[MAX_PATH];
+	swprintf_s(md, L"%s\\MobileDevice.dll", dest);
+	WCHAR cf[MAX_PATH];
+	swprintf_s(cf, L"%s\\CoreFoundation.dll", dest);
+	return FileExistsW(md) && FileExistsW(cf);
+}
+
+static DWORD WINAPI AppleLoopThread(LPVOID)
+{
+	mach_error_t err=-1;
+	if (pCFRunLoopGetCurrent)
+		g_runLoop=pCFRunLoopGetCurrent();
+	if (pAMDeviceNotificationSubscribe)
+		err=pAMDeviceNotificationSubscribe(OnAppleNotify, 0, 0, NULL, &g_notify);
+	if (g_loopReady)
+		SetEvent(g_loopReady);
+	if (err==0 && pCFRunLoopRun && InterlockedCompareExchange(&g_loopStop, 0, 0)==0)
+		pCFRunLoopRun();
+	return 0;
+}
+
+static BOOL BindAppleProcs()
+{
 	pCFStringCreateWithCString=(t_CFStringCreateWithCString)GetProcAddress(g_cf, "CFStringCreateWithCString");
 	pCFStringGetCString=(t_CFStringGetCString)GetProcAddress(g_cf, "CFStringGetCString");
 	pCFRelease=(t_CFRelease)GetProcAddress(g_cf, "CFRelease");
+	pCFRunLoopGetCurrent=(t_CFRunLoopGetCurrent)GetProcAddress(g_cf, "CFRunLoopGetCurrent");
+	pCFRunLoopRun=(t_CFRunLoopRun)GetProcAddress(g_cf, "CFRunLoopRun");
+	pCFRunLoopStop=(t_CFRunLoopStop)GetProcAddress(g_cf, "CFRunLoopStop");
 	pAMDeviceNotificationSubscribe=(t_AMDeviceNotificationSubscribe)GetProcAddress(g_md, "AMDeviceNotificationSubscribe");
+	pAMDeviceNotificationUnsubscribe=(t_AMDeviceNotificationUnsubscribe)GetProcAddress(g_md, "AMDeviceNotificationUnsubscribe");
 	pAMDeviceConnect=(t_AMDeviceConnect)GetProcAddress(g_md, "AMDeviceConnect");
 	pAMDeviceDisconnect=(t_AMDeviceDisconnect)GetProcAddress(g_md, "AMDeviceDisconnect");
 	pAMDeviceIsPaired=(t_AMDeviceIsPaired)GetProcAddress(g_md, "AMDeviceIsPaired");
@@ -453,11 +574,57 @@ static BOOL LoadAppleDlls()
 	pAFCFileRefOpen=(t_AFCFileRefOpen)GetProcAddress(g_md, "AFCFileRefOpen");
 	pAFCFileRefRead=(t_AFCFileRefRead)GetProcAddress(g_md, "AFCFileRefRead");
 	pAFCFileRefClose=(t_AFCFileRefClose)GetProcAddress(g_md, "AFCFileRefClose");
-	if (!pAMDeviceNotificationSubscribe || !pAMDeviceConnect || !pAMDeviceCopyValue ||
-		!pAFCConnectionOpen || !pCFStringCreateWithCString)
+	return pAMDeviceNotificationSubscribe && pAMDeviceConnect && pAMDeviceCopyValue &&
+		pAFCConnectionOpen && pCFStringCreateWithCString && pCFRunLoopRun;
+}
+
+static BOOL LoadAppleDlls()
+{
+	if (g_loaded)
+		return g_md!=NULL;
+	g_loaded=TRUE;
+	if (!g_appleCsInit) {
+		InitializeCriticalSection(&g_appleCs);
+		g_appleCsInit=TRUE;
+	}
+
+	WCHAR pkg[MAX_PATH], dest[MAX_PATH];
+	pkg[0]=0; dest[0]=0;
+	if (FindApplePackage(pkg, MAX_PATH))
+		StageAppleDlls(pkg, dest, MAX_PATH);
+
+	HMODULE k32=GetModuleHandleW(L"kernel32.dll");
+	typedef PVOID (WINAPI *t_AddDllDirectory)(PCWSTR);
+	t_AddDllDirectory pAdd=(t_AddDllDirectory)GetProcAddress(k32, "AddDllDirectory");
+	if (pAdd && dest[0])
+		pAdd(dest);
+
+	WCHAR path[MAX_PATH];
+	if (dest[0]) {
+		swprintf_s(path, L"%s\\CoreFoundation.dll", dest);
+		g_cf=LoadLibraryExW(path, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
+		swprintf_s(path, L"%s\\MobileDevice.dll", dest);
+		g_md=LoadLibraryExW(path, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
+	}
+	if (!g_md) {
+		WCHAR pf[MAX_PATH], mds[MAX_PATH];
+		GetEnvironmentVariableW(L"ProgramFiles", pf, MAX_PATH);
+		swprintf_s(mds, L"%s\\Common Files\\Apple\\Mobile Device Support\\iTunesMobileDevice.dll", pf);
+		if (FileExistsW(mds))
+			g_md=LoadLibraryExW(mds, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
+	}
+	if (!g_cf || !g_md)
 		return FALSE;
-	if (pAMDeviceNotificationSubscribe(OnAppleNotify, 0, 0, NULL, &g_notify)==0)
-		Sleep(400);
+	if (!BindAppleProcs())
+		return FALSE;
+
+	g_loopReady=CreateEventW(NULL, TRUE, FALSE, NULL);
+	g_loopThread=CreateThread(NULL, 0, AppleLoopThread, NULL, 0, NULL);
+	if (!g_loopThread)
+		return FALSE;
+	WaitForSingleObject(g_loopReady, 2000);
+	for (int i=0;i<20 && g_nphones==0;i++)
+		Sleep(50);
 	return TRUE;
 }
 
@@ -468,6 +635,22 @@ void AppleMdInit(void)
 
 void AppleMdShutdown(void)
 {
+	InterlockedExchange(&g_loopStop, 1);
+	if (g_runLoop && pCFRunLoopStop)
+		pCFRunLoopStop(g_runLoop);
+	if (g_notify && pAMDeviceNotificationUnsubscribe) {
+		pAMDeviceNotificationUnsubscribe(g_notify);
+		g_notify=NULL;
+	}
+	if (g_loopThread) {
+		WaitForSingleObject(g_loopThread, 2000);
+		CloseHandle(g_loopThread);
+		g_loopThread=NULL;
+	}
+	if (g_loopReady) {
+		CloseHandle(g_loopReady);
+		g_loopReady=NULL;
+	}
 	AppleLock();
 	for (int i=0;i<g_nphones;i++)
 		ClosePhone(&g_phones[i]);
@@ -477,15 +660,22 @@ void AppleMdShutdown(void)
 
 int AppleMdCount(void)
 {
-	return g_nphones;
+	AppleLock();
+	int n=g_nphones;
+	AppleUnlock();
+	return n;
 }
 
 BOOL AppleMdGetName(int index, WCHAR* name, int cch)
 {
-	if (index<0 || index>=g_nphones || !name)
+	if (!name)
 		return FALSE;
-	wcslcpy(name, g_phones[index].name, cch);
-	return TRUE;
+	AppleLock();
+	BOOL ok=index>=0 && index<g_nphones;
+	if (ok)
+		wcslcpy(name, g_phones[index].name, cch);
+	AppleUnlock();
+	return ok;
 }
 
 BOOL AppleMdIsDeviceName(LPCWSTR name)

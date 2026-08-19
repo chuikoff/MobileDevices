@@ -256,7 +256,6 @@ BOOL QueryDeviceInfo(LPCWSTR remoteName, PluginDeviceInfo* info)
 		keys->Add(WPD_DEVICE_FRIENDLY_NAME);
 		keys->Add(WPD_DEVICE_MANUFACTURER);
 		keys->Add(WPD_DEVICE_MODEL);
-		keys->Add(WPD_DEVICE_FIRMWARE_VERSION);
 		keys->Add(WPD_DEVICE_PROTOCOL);
 		keys->Add(WPD_DEVICE_POWER_LEVEL);
 		IPortableDeviceValues* v=NULL;
@@ -265,11 +264,7 @@ BOOL QueryDeviceInfo(LPCWSTR remoteName, PluginDeviceInfo* info)
 			CopyWpdString(v, WPD_DEVICE_MODEL, info->model, 128);
 			if (!info->model[0])
 				CopyWpdString(v, WPD_DEVICE_FRIENDLY_NAME, info->model, 128);
-			CopyWpdString(v, WPD_DEVICE_FIRMWARE_VERSION, info->firmware, 128);
-			if (!info->firmware[0] || !_wcsicmp(info->firmware, L"1.0") ||
-				!_wcsicmp(info->firmware, L"1.00") || !_wcsicmp(info->firmware, L"1.1") ||
-				StrStrIW(info->firmware, L"MTP"))
-				info->firmware[0]=0;
+			info->firmware[0]=0;
 			CopyWpdString(v, WPD_DEVICE_PROTOCOL, info->protocol, 80);
 			wcslcpy(info->os, L"Android", 40);
 			info->battery=ReadBatteryPercent(v);
@@ -359,9 +354,10 @@ void FormatDeviceInfo(int lang, const PluginDeviceInfo* info, WCHAR* out, int ou
 		swprintf_s(line, ru ? L"Производитель: %s\r\n" : L"Manufacturer: %s\r\n", info->manufacturer);
 		wcslcat(out, line, outcch);
 	}
-	swprintf_s(line, ru ? L"Прошивка: %s\r\n" : L"Firmware: %s\r\n",
-		info->firmware[0] ? info->firmware : na);
-	wcslcat(out, line, outcch);
+	if (info->firmware[0] && _wcsnicmp(info->os, L"Android", 7)!=0) {
+		swprintf_s(line, ru ? L"Прошивка: %s\r\n" : L"Firmware: %s\r\n", info->firmware);
+		wcslcat(out, line, outcch);
+	}
 	if (info->battery>=0)
 		swprintf_s(line, ru ? L"Батарея: %d%%\r\n" : L"Battery: %d%%\r\n", info->battery);
 	else

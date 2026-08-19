@@ -1,4 +1,4 @@
-MTP Devices plugin v2.1.0
+MTP Devices plugin v2.1.1
 =======================
 Modified from Windows Media Audio 2 (wpdplug) by Christian Ghisler.
 
@@ -30,7 +30,7 @@ The plugin shows up in Network Neighborhood as "MTP Devices".
 Command line (current plugin path):
   quote refresh     rescan devices
   quote eject       safely remove the current device
-  quote info        model, firmware, battery, storage free/capacity
+  quote info        model, battery, storage free/capacity (iOS version for iPhone)
   quote reconnect   same as refresh
 
 Existing MediaAudio2 timezone settings (Alt+Enter on the device) are still
@@ -38,6 +38,9 @@ read; new settings are stored under [MTPDevices].
 
 History
 =======
+20260819 Release v2.1.1
+20260819 Fixed: iPhone was not listed (Store Apple DLLs cannot be loaded in-place; copy + CFRunLoop)
+20260819 Changed: Android device info no longer shows a software/firmware version
 20260819 Release v2.1.0
 20260819 Added: iPhone photos via Apple Mobile Device (Microsoft Store Apple Devices), not MTP
 20260819 Changed: plugin root shows only Android (MTP) and iPhone/iPad (Apple driver)
