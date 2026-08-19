@@ -1,4 +1,4 @@
-MTP Devices plugin v2.1.1
+MTP Devices plugin v2.1.2
 =======================
 Modified from Windows Media Audio 2 (wpdplug) by Christian Ghisler.
 
@@ -38,6 +38,8 @@ read; new settings are stored under [MTPDevices].
 
 History
 =======
+20260819 Release v2.1.2
+20260819 Changed: plugin icon restyled to Windows 11 Fluent (phone on rounded tile)
 20260819 Release v2.1.1
 20260819 Fixed: iPhone was not listed (Store Apple DLLs cannot be loaded in-place; copy + CFRunLoop)
 20260819 Changed: Android device info no longer shows a software/firmware version

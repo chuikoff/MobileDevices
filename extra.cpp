@@ -440,7 +440,6 @@ int __stdcall FsExtractCustomIcon(char* RemoteName,int ExtractFlags,HICON* TheIc
 
 int __stdcall FsExtractCustomIconW(WCHAR* RemoteName,int ExtractFlags,HICON* TheIcon)
 {
-	UNREFERENCED_PARAMETER(ExtractFlags);
 	if (!TheIcon || !RemoteName)
 		return FS_ICON_USEDEFAULT;
 	*TheIcon=NULL;
@@ -451,7 +450,13 @@ int __stdcall FsExtractCustomIconW(WCHAR* RemoteName,int ExtractFlags,HICON* The
 	WCHAR* slash=wcschr(RemoteName+1,'\\');
 	BOOL isRootOrDevice=(RemoteName[0]=='\\' && (RemoteName[1]==0 || slash==NULL || slash[1]==0));
 	if (isRootOrDevice || (isDir && slash==NULL)) {
-		*TheIcon=LoadIcon(hInst,MAKEINTRESOURCE(IDI_ICON1));
+		int wh=(ExtractFlags & FS_ICONFLAG_SMALL)
+			? GetSystemMetrics(SM_CXSMICON)
+			: GetSystemMetrics(SM_CXICON);
+		if (wh<=0)
+			wh=(ExtractFlags & FS_ICONFLAG_SMALL) ? 16 : 32;
+		*TheIcon=(HICON)LoadImage(hInst,MAKEINTRESOURCE(IDI_ICON1),IMAGE_ICON,wh,wh,
+			LR_DEFAULTCOLOR | LR_SHARED);
 		if (*TheIcon)
 			return FS_ICON_EXTRACTED;
 	}
