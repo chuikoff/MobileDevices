@@ -1,4 +1,4 @@
-MTP Devices plugin v2.2.6
+MTP Devices plugin v2.3.0
 =======================
 Modified from Windows Media Audio 2 (wpdplug) by Christian Ghisler.
 
@@ -38,6 +38,9 @@ read; new settings are stored under [MTPDevices].
 
 History
 =======
+20260820 Release v2.3.0
+20260820 Changed: app documents via AMDeviceCreateHouseArrestService (same as 3uTools/ios-device-lib)
+20260820 Changed: Panic Logs via AMDeviceSecureStartService, no blocking mover ping
 20260820 Release v2.2.6
 20260820 Fixed: opening Panic Logs could hang Total Commander (crashreportmover recv)
 20260820 Release v2.2.5

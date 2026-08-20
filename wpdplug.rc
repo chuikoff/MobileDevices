@@ -99,8 +99,8 @@ IDI_IPHONE              ICON                    "ICONIPHONE.ICO"
 //
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 2,2,6,0
- PRODUCTVERSION 2,2,6,0
+ FILEVERSION 2,3,0,0
+ PRODUCTVERSION 2,3,0,0
  FILEFLAGSMASK 0x3fL
 #ifdef _DEBUG
  FILEFLAGS 0x1L
@@ -117,12 +117,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "Ghisler Software GmbH"
             VALUE "FileDescription", "MTP Devices - Total Commander WPD/MTP plugin (modified from MediaAudio2)"
-            VALUE "FileVersion", "2.2.6.0"
+            VALUE "FileVersion", "2.3.0.0"
             VALUE "InternalName", "mtpdevices"
             VALUE "LegalCopyright", "Copyright (C) 2011-2018 Christian Ghisler, Ghisler Software GmbH. Modifications (C) 2026. BSD-3-Clause."
             VALUE "OriginalFilename", "mtpdevices.wfx"
             VALUE "ProductName", "MTP Devices"
-            VALUE "ProductVersion", "2.2.6.0"
+            VALUE "ProductVersion", "2.3.0.0"
         END
     END
     BLOCK "VarFileInfo"

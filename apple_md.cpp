@@ -82,8 +82,9 @@ typedef CFStringRef (*t_AMDeviceCopyValue)(am_device, CFStringRef, CFStringRef);
 typedef mach_error_t (*t_AMDeviceStartService)(am_device, CFStringRef, int*, void*);
 typedef mach_error_t (*t_AMDeviceSecureStartService)(am_device, CFStringRef, void*, void**);
 typedef mach_error_t (*t_AMDeviceStartHouseArrestService)(am_device, CFStringRef, void*, int*, unsigned int*);
+typedef mach_error_t (*t_AMDeviceCreateHouseArrestService)(am_device, CFStringRef, void*, afc_connection*);
 typedef int (*t_AMDServiceConnectionGetSocket)(void*);
-typedef afc_error_t (*t_AFCConnectionOpen)(int, unsigned, afc_connection*);
+typedef afc_error_t (*t_AFCConnectionOpen)(void*, unsigned, afc_connection*);
 typedef afc_error_t (*t_AFCConnectionClose)(afc_connection);
 typedef afc_error_t (*t_AFCDirectoryOpen)(afc_connection, const char*, afc_directory*);
 typedef afc_error_t (*t_AFCDirectoryRead)(afc_connection, afc_directory, char**);
@@ -137,6 +138,7 @@ static t_AMDeviceCopyValue pAMDeviceCopyValue;
 static t_AMDeviceStartService pAMDeviceStartService;
 static t_AMDeviceSecureStartService pAMDeviceSecureStartService;
 static t_AMDeviceStartHouseArrestService pAMDeviceStartHouseArrestService;
+static t_AMDeviceCreateHouseArrestService pAMDeviceCreateHouseArrestService;
 static t_AMDServiceConnectionGetSocket pAMDServiceConnectionGetSocket;
 static t_AFCConnectionOpen pAFCConnectionOpen;
 static t_AFCConnectionClose pAFCConnectionClose;
@@ -486,6 +488,22 @@ static BOOL StartNamedService(ApplePhone* p, const char* name, int* sock)
 	return FALSE;
 }
 
+static BOOL AfcOpenAny(void* handle, afc_connection* out)
+{
+	*out=NULL;
+	if (!handle || !pAFCConnectionOpen)
+		return FALSE;
+	BOOL ok=FALSE;
+	__try {
+		if (pAFCConnectionOpen(handle, 0, out)==0 && *out)
+			ok=TRUE;
+	} __except(EXCEPTION_EXECUTE_HANDLER) {
+		*out=NULL;
+		ok=FALSE;
+	}
+	return ok;
+}
+
 static BOOL EnsureSession(ApplePhone* p)
 {
 	if (!p || !p->dev)
@@ -501,7 +519,7 @@ static BOOL EnsureSession(ApplePhone* p)
 		return FALSE;
 	p->sock=sock;
 	afc_connection conn=NULL;
-	if (pAFCConnectionOpen(sock, 0, &conn)!=0 || !conn)
+	if (!AfcOpenAny((void*)(intptr_t)(unsigned)sock, &conn) || !conn)
 		return FALSE;
 	p->afc=conn;
 	return TRUE;
@@ -803,6 +821,7 @@ static BOOL BindAppleProcs()
 	pAMDeviceStartService=(t_AMDeviceStartService)GetProcAddress(g_md, "AMDeviceStartService");
 	pAMDeviceSecureStartService=(t_AMDeviceSecureStartService)GetProcAddress(g_md, "AMDeviceSecureStartService");
 	pAMDeviceStartHouseArrestService=(t_AMDeviceStartHouseArrestService)GetProcAddress(g_md, "AMDeviceStartHouseArrestService");
+	pAMDeviceCreateHouseArrestService=(t_AMDeviceCreateHouseArrestService)GetProcAddress(g_md, "AMDeviceCreateHouseArrestService");
 	pAMDServiceConnectionGetSocket=(t_AMDServiceConnectionGetSocket)GetProcAddress(g_md, "AMDServiceConnectionGetSocket");
 	pAFCConnectionOpen=(t_AFCConnectionOpen)GetProcAddress(g_md, "AFCConnectionOpen");
 	pAFCConnectionClose=(t_AFCConnectionClose)GetProcAddress(g_md, "AFCConnectionClose");
@@ -1533,23 +1552,50 @@ static BOOL AppDocumentsOpen(ApplePhone* p, const char* bundle, afc_connection* 
 {
 	*outConn=NULL;
 	*outSock=0;
-	if (!p || !bundle || !bundle[0] || !EnsureLockdown(p) || !pAFCConnectionOpen)
+	if (!p || !bundle || !bundle[0] || !EnsureLockdown(p))
 		return FALSE;
+
+	/* 3uTools / NativeScript / facebook idb: AMDeviceCreateHouseArrestService
+	   returns a ready AFC connection. Do not send plist on a raw socket. */
+	if (pAMDeviceCreateHouseArrestService) {
+		CFStringRef bid=CfStr(bundle);
+		if (bid) {
+			afc_connection conn=NULL;
+			mach_error_t err=0;
+			__try {
+				err=pAMDeviceCreateHouseArrestService(p->dev, bid, NULL, &conn);
+			} __except(EXCEPTION_EXECUTE_HANDLER) {
+				err=-1;
+				conn=NULL;
+			}
+			if ((err!=0 || !conn)) {
+				conn=NULL;
+				CFMutableDictionaryRef opt=DictNew();
+				if (opt) {
+					DictSetCStr(opt, "Command", "VendDocuments");
+					__try {
+						err=pAMDeviceCreateHouseArrestService(p->dev, bid, opt, &conn);
+					} __except(EXCEPTION_EXECUTE_HANDLER) {
+						err=-1;
+						conn=NULL;
+					}
+					pCFRelease(opt);
+				}
+			}
+			pCFRelease(bid);
+			if (err==0 && conn) {
+				*outConn=conn;
+				return TRUE;
+			}
+		}
+	}
 
 	int sock=0;
 	if (!HouseArrest(p, bundle, "VendDocuments", &sock) || sock==0)
-		return FALSE;
-
+		if (!HouseArrest(p, bundle, "VendContainer", &sock) || sock==0)
+			return FALSE;
 	afc_connection conn=NULL;
-	BOOL ok=FALSE;
-	__try {
-		if (pAFCConnectionOpen(sock, 0, &conn)==0 && conn)
-			ok=TRUE;
-	} __except(EXCEPTION_EXECUTE_HANDLER) {
-		conn=NULL;
-		ok=FALSE;
-	}
-	if (!ok)
+	if (!AfcOpenAny((void*)(intptr_t)(unsigned)sock, &conn) || !conn)
 		return FALSE;
 	*outConn=conn;
 	*outSock=sock;
@@ -1589,19 +1635,27 @@ struct PanicOpenJob {
 static DWORD WINAPI PanicOpenThread(LPVOID arg)
 {
 	PanicOpenJob* j=(PanicOpenJob*)arg;
-	int dummy=0;
-	StartNamedService(j->p, "com.apple.crashreportmover", &dummy);
-	int sock=0;
 	afc_connection conn=NULL;
 	BOOL ok=FALSE;
-	if (!j->cancel && StartNamedService(j->p, "com.apple.crashreportcopymobile", &sock) && sock) {
-		__try {
-			if (!j->cancel && pAFCConnectionOpen(sock, 0, &conn)==0 && conn)
+	if (!j->cancel && pAMDeviceSecureStartService) {
+		CFStringRef name=CfStr("com.apple.crashreportcopymobile");
+		void* svc=NULL;
+		if (name && pAMDeviceSecureStartService(j->p->dev, name, NULL, &svc)==0 && svc) {
+			if (AfcOpenAny(svc, &conn))
 				ok=TRUE;
-		} __except(EXCEPTION_EXECUTE_HANDLER) {
-			ok=FALSE;
-			conn=NULL;
+			else if (pAMDServiceConnectionGetSocket) {
+				int s=pAMDServiceConnectionGetSocket(svc);
+				if (s)
+					ok=AfcOpenAny((void*)(intptr_t)(unsigned)s, &conn);
+			}
 		}
+		if (name)
+			pCFRelease(name);
+	}
+	if (!ok && !j->cancel) {
+		int sock=0;
+		if (StartNamedService(j->p, "com.apple.crashreportcopymobile", &sock) && sock)
+			ok=AfcOpenAny((void*)(intptr_t)(unsigned)sock, &conn);
 	}
 	if (j->cancel) {
 		if (conn && pAFCConnectionClose) {
@@ -1613,7 +1667,7 @@ static DWORD WINAPI PanicOpenThread(LPVOID arg)
 	}
 	if (ok) {
 		j->p->panicAfc=conn;
-		j->p->panicSock=sock;
+		j->p->panicSock=0;
 	}
 	j->ok=ok;
 	SetEvent(j->done);
@@ -1662,9 +1716,12 @@ static void JoinAfc(const char* prefix, const char* rel, char* out, int cch)
 			out[0]=0;
 		return;
 	}
-	if (prefix && prefix[0])
-		sprintf_s(out, cch, "%s/%s", prefix, rel);
-	else
+	if (prefix && prefix[0]) {
+		if (prefix[0]=='/' && prefix[1]==0)
+			sprintf_s(out, cch, "/%s", rel);
+		else
+			sprintf_s(out, cch, "%s/%s", prefix, rel);
+	} else
 		strcpy_s(out, cch, rel);
 }
 
@@ -1691,7 +1748,7 @@ static BOOL ResolveAfc(ApplePhone* p, LPCWSTR rel, afc_connection* conn, char* p
 		if (!EnsureAppAfc(p, app) || !p->appAfc)
 			return FALSE;
 		*conn=p->appAfc;
-		JoinAfc(p->appRoot, relAfc, path, pathcch);
+		JoinAfc(p->appRoot[0] ? p->appRoot : "/", relAfc, path, pathcch);
 		return TRUE;
 	}
 	if (kind==AR_PANICS || kind==AR_PANICS_REL) {
