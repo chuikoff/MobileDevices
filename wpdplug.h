@@ -23,4 +23,6 @@
 #define PLUGIN_INI_SECTION_LEGACY L"MTPDevices"
 #define PLUGIN_INI_SECTION_LEGACY2 L"MediaAudio2"
 #define PLUGIN_WPD_CLIENT_NAME  L"Total Commander Mobile Devices"
+#define PLUGIN_GITHUB_URL       "https://github.com/chuikoff/MobileDevices"
+#define PLUGIN_GITHUB_URL_W     L"https://github.com/chuikoff/MobileDevices"
 

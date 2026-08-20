@@ -3132,10 +3132,13 @@ int __stdcall FsExecuteFileW(HWND MainWin,WCHAR* RemoteName,WCHAR* Verb)
 	if (_wcsicmp(Verb,L"open")==0) {
 		return FS_EXEC_YOURSELF;
 	} else if (_wcsicmp(Verb,L"properties")==0) {
-		// is it a device? If yes, the form is /devicename or /devicename/
+		if (RemoteName[1]==0) {
+			ShowPluginAboutDialog(hInst, MainWin);
+			return FS_EXEC_OK;
+		}
 		WCHAR* p=wcschr(RemoteName+1,'\\');
 		if (p==NULL || p[1]==0) {
-			ChangeConnectionSettingsW(hInst,MainWin,RemoteName);
+			ShowDevicePropertiesDialog(hInst, MainWin, RemoteName);
 			return FS_EXEC_OK;
 		}
 		return FS_EXEC_YOURSELF;

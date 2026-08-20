@@ -71,5 +71,5 @@ Features
 14. iPhone does not need iTunes drivers — install Apple Devices
     from the Microsoft Store.
 
-Timezone settings (Alt+Enter on the device) are stored under
-[MobileDevices].
+Alt+Enter on the plugin shows version and GitHub.
+Alt+Enter on a device shows only device information.

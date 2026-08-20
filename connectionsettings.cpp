@@ -1,11 +1,17 @@
 #include <windows.h>
+#include <stdio.h>
+#include <wchar.h>
 #include <uxtheme.h>
+#include <commctrl.h>
+#include <shellapi.h>
 #include "cunicode.h"
-
-#pragma comment(lib, "uxtheme.lib")
 #include "resource.h"
 #include "wpdplug.h"
 #include "wpdplug_int.h"
+
+#pragma comment(lib, "uxtheme.lib")
+#pragma comment(lib, "comctl32.lib")
+#pragma comment(lib, "shell32.lib")
 
 extern WCHAR DefaultIniNameW[MAX_PATH];
 WCHAR SettingsName[MAX_PATH];
@@ -14,47 +20,9 @@ int LastLocalTime=0;
 
 enum { UI_LANG_EN=0, UI_LANG_RU=1 };
 
-struct DlgStrings {
-	const WCHAR* caption;
-	const WCHAR* langLabel;
-	const WCHAR* infoGroup;
-	const WCHAR* timeGroup;
-	const WCHAR* localNew;
-	const WCHAR* localOld;
-	const WCHAR* utc;
-	const WCHAR* hint1;
-	const WCHAR* ok;
-	const WCHAR* cancel;
-};
-
-static const DlgStrings kStrEn={
-	L"Device Settings",
-	L"Language:",
-	L"Android / device",
-	L"File time sent by the device",
-	L"Local time, new conversion (Android)",
-	L"Local time, old conversion (some mp3 players)",
-	L"UTC (some mp3 players)",
-	L"Hint: upload a file and check whether the timestamp is correct. On most devices it will be the current time.",
-	L"OK",
-	L"Cancel"
-};
-
-static const DlgStrings kStrRu={
-	L"Настройки устройства",
-	L"Язык:",
-	L"Android / устройство",
-	L"Дата и время, которые присылает устройство",
-	L"Местное время, новый способ (Android)",
-	L"Местное время, старый способ (некоторые mp3-плееры)",
-	L"Всемирное время UTC (некоторые mp3-плееры)",
-	L"Подсказка: загрузите файл и проверьте, верна ли дата. На большинстве устройств это текущее время.",
-	L"ОК",
-	L"Отмена"
-};
-
 static PluginDeviceInfo g_dlgInfo;
 static BOOL g_dlgInfoOk=FALSE;
+static HICON g_aboutIcon=NULL;
 
 static int ReadLocalTimeIni(WCHAR* keyName)
 {
@@ -82,12 +50,6 @@ int GetPluginUiLanguage(void)
 	return UI_LANG_EN;
 }
 
-static void SavePluginUiLanguage(int lang)
-{
-	WritePrivateProfileStringW(PLUGIN_INI_SECTION,L"Language",
-		lang==UI_LANG_RU ? L"ru" : L"en", DefaultIniNameW);
-}
-
 int UseLocalTime(WCHAR* path)
 {
 	WCHAR SettingsName2[MAX_PATH];
@@ -99,112 +61,125 @@ int UseLocalTime(WCHAR* path)
 		p[0]=0;
 	if (wcscmp(LastSettingsName,SettingsName2)==0)
 		return LastLocalTime;
-	else {
-		WCHAR KeyName[MAX_PATH];
-		wcslcpy(LastSettingsName,SettingsName2,MAX_PATH-1);
-		wcslcpy(KeyName,SettingsName2,MAX_PATH-1);
-		wcslcat(KeyName,L"_LOCALTIME",MAX_PATH-1);
-		LastLocalTime=ReadLocalTimeIni(KeyName);
-		return LastLocalTime;
-	}
-}
-
-static void FillDeviceInfoBox(HWND hDlg, int lang)
-{
-	WCHAR text[2048];
-	if (g_dlgInfoOk)
-		FormatDeviceInfo(lang, &g_dlgInfo, text, 2048);
-	else
-		wcslcpy(text, lang==UI_LANG_RU
-			? L"Не удалось прочитать сведения (откройте устройство и повторите)."
-			: L"Could not read device info (open the device and retry).", 2048);
-	SetDlgItemTextW(hDlg, IDC_DEVICE_INFO, text);
-}
-
-static void ApplyDlgLanguage(HWND hDlg, int lang)
-{
-	const DlgStrings* s=(lang==UI_LANG_RU) ? &kStrRu : &kStrEn;
-	SetWindowTextW(hDlg, s->caption);
-	SetDlgItemTextW(hDlg, IDC_LANG_LABEL, s->langLabel);
-	SetDlgItemTextW(hDlg, IDC_INFO_GROUP, s->infoGroup);
-	SetDlgItemTextW(hDlg, IDC_TIME_GROUP, s->timeGroup);
-	SetDlgItemTextW(hDlg, IDC_LOCALTIME_NEW, s->localNew);
-	SetDlgItemTextW(hDlg, IDC_LOCALTIME_OLD, s->localOld);
-	SetDlgItemTextW(hDlg, IDC_UNIVERSALTIME, s->utc);
-	SetDlgItemTextW(hDlg, IDC_HINT1, s->hint1);
-	SetDlgItemTextW(hDlg, IDOK, s->ok);
-	SetDlgItemTextW(hDlg, IDCANCEL, s->cancel);
-	FillDeviceInfoBox(hDlg, lang);
-}
-
-BOOL CALLBACK PropDlg(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
-{
 	WCHAR KeyName[MAX_PATH];
-	WCHAR* local=NULL;
-	wcslcpy(KeyName,SettingsName,MAX_PATH-1);
+	wcslcpy(LastSettingsName,SettingsName2,MAX_PATH-1);
+	wcslcpy(KeyName,SettingsName2,MAX_PATH-1);
 	wcslcat(KeyName,L"_LOCALTIME",MAX_PATH-1);
+	LastLocalTime=ReadLocalTimeIni(KeyName);
+	return LastLocalTime;
+}
+
+static BOOL CALLBACK DeviceInfoDlg(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
+{
+	UNREFERENCED_PARAMETER(lParam);
 	switch (message)
 	{
-		case WM_INITDIALOG:
-			SendDlgItemMessageW(hDlg, IDC_LANGUAGE, CB_ADDSTRING, 0, (LPARAM)L"English");
-			SendDlgItemMessageW(hDlg, IDC_LANGUAGE, CB_ADDSTRING, 0, (LPARAM)L"Русский");
-			g_dlgInfoOk=QueryDeviceInfo(SettingsName, &g_dlgInfo);
-			{
-				int lang=GetPluginUiLanguage();
-				SendDlgItemMessageW(hDlg, IDC_LANGUAGE, CB_SETCURSEL, lang, 0);
-				ApplyDlgLanguage(hDlg, lang);
-			}
-			switch (ReadLocalTimeIni(KeyName))
-			{
-			case 1:
-				CheckDlgButton(hDlg,IDC_LOCALTIME_OLD,BST_CHECKED);
-				break;
-			case 2:
-				CheckDlgButton(hDlg,IDC_LOCALTIME_NEW,BST_CHECKED);
-				break;
-			default:
-				CheckDlgButton(hDlg,IDC_UNIVERSALTIME,BST_CHECKED);
-				break;
-			}
+	case WM_INITDIALOG:
+		{
+			int lang=GetPluginUiLanguage();
+			SetWindowTextW(hDlg, SettingsName[0] ? SettingsName : PLUGIN_DISPLAY_NAME_W);
+			WCHAR text[2048];
+			if (g_dlgInfoOk)
+				FormatDeviceInfo(lang, &g_dlgInfo, text, 2048);
+			else
+				wcslcpy(text, lang==UI_LANG_RU
+					? L"Не удалось прочитать сведения об устройстве."
+					: L"Could not read device information.", 2048);
+			SetDlgItemTextW(hDlg, IDC_DEVICE_INFO, text);
+			SetDlgItemTextW(hDlg, IDOK, lang==UI_LANG_RU ? L"ОК" : L"OK");
 			SetWindowTheme(hDlg, L"Explorer", NULL);
+		}
+		return TRUE;
+	case WM_COMMAND:
+		if (LOWORD(wParam)==IDOK || LOWORD(wParam)==IDCANCEL) {
+			EndDialog(hDlg, IDOK);
 			return TRUE;
-		case WM_COMMAND:
-			if (LOWORD(wParam)==IDC_LANGUAGE && HIWORD(wParam)==CBN_SELCHANGE) {
-				int lang=(int)SendDlgItemMessageW(hDlg, IDC_LANGUAGE, CB_GETCURSEL, 0, 0);
-				if (lang<0)
-					lang=UI_LANG_EN;
-				ApplyDlgLanguage(hDlg, lang);
-				return TRUE;
-			}
-			switch (LOWORD(wParam)) {
-			case IDOK:
-				if (IsDlgButtonChecked(hDlg,IDC_LOCALTIME_OLD))
-					local=L"1";
-				else if (IsDlgButtonChecked(hDlg,IDC_LOCALTIME_NEW))
-					local=L"2";
-				else
-					local=L"0";
-				WritePrivateProfileStringW(PLUGIN_INI_SECTION,KeyName,local,
-					DefaultIniNameW);
-				{
-					int lang=(int)SendDlgItemMessageW(hDlg, IDC_LANGUAGE, CB_GETCURSEL, 0, 0);
-					SavePluginUiLanguage(lang==UI_LANG_RU ? UI_LANG_RU : UI_LANG_EN);
-				}
-				LastSettingsName[0]=0;   // reset value
-			case IDCANCEL:
-				EndDialog(hDlg, LOWORD(wParam));
-				return TRUE;
-			}
-			break;
+		}
+		break;
 	}
 	return FALSE;
 }
 
-BOOL ChangeConnectionSettingsW(HINSTANCE hInst,HWND parent,WCHAR* RemoteName)
+static void OpenGitHub(HWND parent)
 {
-	if (RemoteName[0]=='\\')
+	ShellExecuteW(parent, L"open", PLUGIN_GITHUB_URL_W, NULL, NULL, SW_SHOWNORMAL);
+}
+
+static BOOL CALLBACK PluginAboutDlg(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
+{
+	switch (message)
+	{
+	case WM_INITDIALOG:
+		{
+			int ru=(GetPluginUiLanguage()==UI_LANG_RU);
+			g_aboutIcon=(HICON)LoadImageW(hInst, MAKEINTRESOURCEW(IDI_ICON1), IMAGE_ICON, 48, 48, LR_DEFAULTCOLOR);
+			if (g_aboutIcon) {
+				SendDlgItemMessageW(hDlg, IDC_PLUGIN_ICON, STM_SETICON, (WPARAM)g_aboutIcon, 0);
+				SendMessageW(hDlg, WM_SETICON, ICON_SMALL, (LPARAM)g_aboutIcon);
+			}
+			SetWindowTextW(hDlg, PLUGIN_DISPLAY_NAME_W);
+			SetDlgItemTextW(hDlg, IDC_ABOUT_TITLE, PLUGIN_DISPLAY_NAME_W);
+			WCHAR ver[80];
+			swprintf_s(ver, ru ? L"Версия %hs" : L"Version %hs", PLUGIN_VERSION_STR);
+			SetDlgItemTextW(hDlg, IDC_ABOUT_VER, ver);
+			SetDlgItemTextW(hDlg, IDC_ABOUT_DESC, ru
+				? L"Плагин Total Commander для Android (MTP) и iPhone.\nКаталоги читаются быстрее стандартного MTP."
+				: L"Total Commander plugin for Android (MTP) and iPhone.\nDirectory listing is faster than standard MTP.");
+			WCHAR link[320];
+			swprintf_s(link, L"<a href=\"%s\">%s</a>", PLUGIN_GITHUB_URL_W, PLUGIN_GITHUB_URL_W);
+			SetDlgItemTextW(hDlg, IDC_GITHUB_LINK, link);
+			SetDlgItemTextW(hDlg, IDOK, ru ? L"ОК" : L"OK");
+			SetWindowTheme(hDlg, L"Explorer", NULL);
+		}
+		return TRUE;
+	case WM_NOTIFY:
+		if (((LPNMHDR)lParam)->idFrom==IDC_GITHUB_LINK &&
+			(((LPNMHDR)lParam)->code==NM_CLICK || ((LPNMHDR)lParam)->code==NM_RETURN)) {
+			PNMLINK pNMLink=(PNMLINK)lParam;
+			if (pNMLink->item.szUrl[0])
+				ShellExecuteW(hDlg, L"open", pNMLink->item.szUrl, NULL, NULL, SW_SHOWNORMAL);
+			else
+				OpenGitHub(hDlg);
+			return TRUE;
+		}
+		break;
+	case WM_COMMAND:
+		if (LOWORD(wParam)==IDOK || LOWORD(wParam)==IDCANCEL) {
+			EndDialog(hDlg, IDOK);
+			return TRUE;
+		}
+		break;
+	case WM_DESTROY:
+		if (g_aboutIcon) {
+			DestroyIcon(g_aboutIcon);
+			g_aboutIcon=NULL;
+		}
+		break;
+	}
+	return FALSE;
+}
+
+BOOL ShowDevicePropertiesDialog(HINSTANCE hInstDlg, HWND parent, WCHAR* RemoteName)
+{
+	if (RemoteName && RemoteName[0]=='\\')
 		RemoteName++;
-	wcslcpy(SettingsName,RemoteName,MAX_PATH-1);
+	if (RemoteName)
+		wcslcpy(SettingsName, RemoteName, MAX_PATH-1);
+	else
+		SettingsName[0]=0;
 	wcutlastbackslash(SettingsName);
-	return DialogBoxW(hInst, MAKEINTRESOURCEW(IDD_CONNECTIONSETTINGS), parent, (DLGPROC)PropDlg)==IDOK;
+	g_dlgInfoOk=QueryDeviceInfo(SettingsName, &g_dlgInfo);
+	return DialogBoxW(hInstDlg, MAKEINTRESOURCEW(IDD_DEVICEINFO), parent, (DLGPROC)DeviceInfoDlg)==IDOK;
+}
+
+BOOL ShowPluginAboutDialog(HINSTANCE hInstDlg, HWND parent)
+{
+	INITCOMMONCONTROLSEX icc={sizeof(icc), ICC_LINK_CLASS};
+	InitCommonControlsEx(&icc);
+	return DialogBoxW(hInstDlg, MAKEINTRESOURCEW(IDD_PLUGINABOUT), parent, (DLGPROC)PluginAboutDlg)==IDOK;
+}
+
+BOOL ChangeConnectionSettingsW(HINSTANCE hInstDlg, HWND parent, WCHAR* RemoteName)
+{
+	return ShowDevicePropertiesDialog(hInstDlg, parent, RemoteName);
 }

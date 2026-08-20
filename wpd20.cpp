@@ -386,15 +386,7 @@ void FormatDeviceInfo(int lang, const PluginDeviceInfo* info, WCHAR* out, int ou
 
 void ShowDeviceInfoBox(HWND parent, LPCWSTR remoteName)
 {
-	PluginDeviceInfo info;
-	WCHAR msg[2048];
-	if (!QueryDeviceInfo(remoteName, &info)) {
-		int ru=(GetPluginUiLanguage()==1);
-		MessageBoxW(parent,
-			ru ? L"Не удалось прочитать сведения об устройстве." : L"Could not read device information.",
-			PLUGIN_DISPLAY_NAME_W, MB_OK | MB_ICONWARNING);
-		return;
-	}
-	FormatDeviceInfo(GetPluginUiLanguage(), &info, msg, 2048);
-	MessageBoxW(parent, msg, PLUGIN_DISPLAY_NAME_W, MB_OK | MB_ICONINFORMATION);
+	WCHAR buf[wdirtypemax];
+	wcslcpy(buf, remoteName ? remoteName : L"\\", wdirtypemax-1);
+	ShowDevicePropertiesDialog(hInst, parent, buf);
 }
