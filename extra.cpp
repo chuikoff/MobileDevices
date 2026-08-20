@@ -338,24 +338,42 @@ BOOL __stdcall FsContentGetDefaultViewW(WCHAR* ViewContents,WCHAR* ViewHeaders,W
 
 static HRESULT CopyToMemoryStream(IStream* src, IStream** dst)
 {
+	if (!src || !dst)
+		return E_POINTER;
 	*dst=NULL;
 	HGLOBAL hg=GlobalAlloc(GMEM_MOVEABLE,1);
 	if (!hg)
 		return E_OUTOFMEMORY;
 	HRESULT hr=CreateStreamOnHGlobal(hg,TRUE,dst);
-	if (FAILED(hr)) {
+	if (FAILED(hr) || !*dst) {
 		GlobalFree(hg);
-		return hr;
+		*dst=NULL;
+		return FAILED(hr)?hr:E_FAIL;
 	}
 	BYTE buf[8192];
-	ULONG nread=0,nwritten=0;
 	for (;;) {
+		ULONG nread=0;
 		hr=src->Read(buf,sizeof(buf),&nread);
 		if (FAILED(hr) || nread==0)
 			break;
-		hr=(*dst)->Write(buf,nread,&nwritten);
-		if (FAILED(hr))
-			break;
+		ULONG off=0;
+		while (off<nread) {
+			ULONG nwritten=0;
+			hr=(*dst)->Write(buf+off, nread-off, &nwritten);
+			if (FAILED(hr) || nwritten==0) {
+				if (SUCCEEDED(hr))
+					hr=STG_E_WRITEFAULT;
+				(*dst)->Release();
+				*dst=NULL;
+				return hr;
+			}
+			off+=nwritten;
+		}
+	}
+	if (FAILED(hr)) {
+		(*dst)->Release();
+		*dst=NULL;
+		return hr;
 	}
 	LARGE_INTEGER zero={0};
 	(*dst)->Seek(zero,STREAM_SEEK_SET,NULL);
