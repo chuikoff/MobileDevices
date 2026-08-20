@@ -98,8 +98,8 @@ static HRESULT GetValuesForPath(WCHAR* path, IPortableDeviceValues** ppValues)
 	HRESULT hr=GetFolderIDFromPathName(pathCopy,NULL,&props,&content,&id);
 	if (FAILED(hr) || !props || !id) {
 		UnlockPlugin();
-		if (props) props->Release();
-		if (content) content->Release();
+		SAFE_RELEASE(props);
+		SAFE_RELEASE(content);
 		if (id) CoTaskMemFree(id);
 		return FAILED(hr)?hr:E_FAIL;
 	}
@@ -123,13 +123,12 @@ static HRESULT GetValuesForPath(WCHAR* path, IPortableDeviceValues** ppValues)
 	keys->Add(WPD_DEVICE_POWER_LEVEL);
 	hr=props->GetValues(id,keys,ppValues);
 	if (FAILED(hr) && ppValues && *ppValues) {
-		(*ppValues)->Release();
-		*ppValues=NULL;
+		SAFE_RELEASE(*ppValues);
 	}
 done:
-	if (keys) keys->Release();
-	if (props) props->Release();
-	if (content) content->Release();
+	SAFE_RELEASE(keys);
+	SAFE_RELEASE(props);
+	SAFE_RELEASE(content);
 	if (id) CoTaskMemFree(id);
 	UnlockPlugin();
 	return hr;
@@ -300,7 +299,7 @@ int __stdcall FsContentGetValueW(WCHAR* FileName,int FieldIndex,int UnitIndex,vo
 		break;
 	}
 	}
-	values->Release();
+	SAFE_RELEASE(values);
 	return result;
 }
 
@@ -363,16 +362,14 @@ static HRESULT CopyToMemoryStream(IStream* src, IStream** dst)
 			if (FAILED(hr) || nwritten==0) {
 				if (SUCCEEDED(hr))
 					hr=STG_E_WRITEFAULT;
-				(*dst)->Release();
-				*dst=NULL;
+				SAFE_RELEASE(*dst);
 				return hr;
 			}
 			off+=nwritten;
 		}
 	}
 	if (FAILED(hr)) {
-		(*dst)->Release();
-		*dst=NULL;
+		SAFE_RELEASE(*dst);
 		return hr;
 	}
 	LARGE_INTEGER zero={0};
@@ -436,7 +433,7 @@ int __stdcall FsGetPreviewBitmapW(WCHAR* RemoteName,int width,int height,HBITMAP
 	WCHAR pathCopy[wdirtypemax];
 	wcslcpy(pathCopy,RemoteName,wdirtypemax-1);
 	HRESULT hr=GetFolderIDFromPathName(pathCopy,NULL,&props,&content,&id);
-	if (props) { props->Release(); props=NULL; }
+	SAFE_RELEASE(props);
 	IStream* pStream=NULL;
 	IStream* memStream=NULL;
 	IPortableDeviceResources* resources=NULL;
@@ -453,9 +450,9 @@ int __stdcall FsGetPreviewBitmapW(WCHAR* RemoteName,int width,int height,HBITMAP
 		if (SUCCEEDED(hr) && pStream)
 			CopyToMemoryStream(pStream,&memStream);
 	}
-	if (pStream) pStream->Release();
-	if (resources) resources->Release();
-	if (content) content->Release();
+	SAFE_RELEASE(pStream);
+	SAFE_RELEASE(resources);
+	SAFE_RELEASE(content);
 	if (id) CoTaskMemFree(id);
 	UnlockPlugin();
 
@@ -463,11 +460,11 @@ int __stdcall FsGetPreviewBitmapW(WCHAR* RemoteName,int width,int height,HBITMAP
 		return FS_BITMAP_NONE;
 
 	if (!GdiPlusInitialize()) {
-		memStream->Release();
+		SAFE_RELEASE(memStream);
 		return FS_BITMAP_NONE;
 	}
 	Gdiplus::Bitmap* bmp=Gdiplus::Bitmap::FromStream(memStream);
-	memStream->Release();
+	SAFE_RELEASE(memStream);
 	if (!bmp || bmp->GetLastStatus()!=Gdiplus::Ok) {
 		delete bmp;
 		return FS_BITMAP_NONE;

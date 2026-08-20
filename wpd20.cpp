@@ -244,8 +244,8 @@ BOOL QueryDeviceInfo(LPCWSTR remoteName, PluginDeviceInfo* info)
 	HRESULT hr=GetFolderIDFromPathName(path, NULL, &props, &content, &rootId);
 	if (FAILED(hr) || !content || !props) {
 		UnlockPlugin();
-		if (content) content->Release();
-		if (props) props->Release();
+		SAFE_RELEASE(content);
+		SAFE_RELEASE(props);
 		if (rootId) CoTaskMemFree(rootId);
 		return FALSE;
 	}
@@ -268,9 +268,9 @@ BOOL QueryDeviceInfo(LPCWSTR remoteName, PluginDeviceInfo* info)
 			CopyWpdString(v, WPD_DEVICE_PROTOCOL, info->protocol, 80);
 			wcslcpy(info->os, L"Android", 40);
 			info->battery=ReadBatteryPercent(v);
-			v->Release();
+			SAFE_RELEASE(v);
 		}
-		keys->Release();
+		SAFE_RELEASE(keys);
 	}
 
 	IEnumPortableDeviceObjectIDs* en=NULL;
@@ -310,24 +310,24 @@ BOOL QueryDeviceInfo(LPCWSTR remoteName, PluginDeviceInfo* info)
 								info->stor[n].freeBytes=freeb;
 								info->nstor++;
 							}
-							sv->Release();
+							SAFE_RELEASE(sv);
 						}
 					}
 					CoTaskMemFree(ids[i]);
 				}
-				sk->Release();
+				SAFE_RELEASE(sk);
 			} else {
 				for (DWORD i=0;i<fetched;i++)
 					CoTaskMemFree(ids[i]);
 			}
 		}
-		en->Release();
+		SAFE_RELEASE(en);
 	}
 
 	if (rootId)
 		CoTaskMemFree(rootId);
-	props->Release();
-	content->Release();
+	SAFE_RELEASE(props);
+	SAFE_RELEASE(content);
 	UnlockPlugin();
 	return TRUE;
 }

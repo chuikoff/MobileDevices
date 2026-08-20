@@ -382,10 +382,7 @@ static HRESULT OpenWpdDevice(LPCWSTR deviceId, IPortableDevice** ppDevice)
 
 	if (FAILED(hr)) {
 		LogWpdError(L"Open(read-write)", hr);
-		if (dev) {
-			dev->Release();
-			dev=NULL;
-		}
+		SAFE_RELEASE(dev);
 		client->SetUnsignedIntegerValue(WPD_CLIENT_DESIRED_ACCESS, GENERIC_READ);
 		HRESULT hr2=CoCreateInstance(CLSID_PortableDevice, NULL, CLSCTX_INPROC_SERVER, IID_IPortableDevice, (VOID**)&dev);
 		if (SUCCEEDED(hr2)) {
@@ -394,14 +391,13 @@ static HRESULT OpenWpdDevice(LPCWSTR deviceId, IPortableDevice** ppDevice)
 				hr=hr2;
 			else {
 				LogWpdError(L"Open(read-only)", hr2);
-				dev->Release();
-				dev=NULL;
+				SAFE_RELEASE(dev);
 				hr=hr2;
 			}
 		} else
 			hr=hr2;
 	}
-	client->Release();
+	SAFE_RELEASE(client);
 	*ppDevice=dev;
 	return hr;
 }
@@ -761,7 +757,7 @@ HRESULT GetFolderIDFromPathName(LPWSTR pPath,IEnumPortableDeviceObjectIDs** pEnu
 		if (pDeviceContent)
 			*pDeviceContent=pContent;
 		else
-			pContent->Release();
+			SAFE_RELEASE(pContent);
 		if (pStorageIDRetVal)
 			*pStorageIDRetVal=wstrnew(returnedObjectId);
 		return hr;
@@ -789,14 +785,10 @@ HRESULT GetFolderIDFromPathName(LPWSTR pPath,IEnumPortableDeviceObjectIDs** pEnu
                                   NULL,            // Filter is unused
                                   &pEnumObjectIDs);
 	if (FAILED(hr)) {
-		if (pPropertiesToRead)
-			pPropertiesToRead->Release();
-		if (pProperties)
-			pProperties->Release();
-		if (pEnumObjectIDs)
-			pEnumObjectIDs->Release();
-		if (pContent)
-			pContent->Release();
+		SAFE_RELEASE(pPropertiesToRead);
+		SAFE_RELEASE(pProperties);
+		SAFE_RELEASE(pEnumObjectIDs);
+		SAFE_RELEASE(pContent);
 		return hr;
 	}
 	pname=pdirsubstart;
@@ -822,13 +814,11 @@ HRESULT GetFolderIDFromPathName(LPWSTR pPath,IEnumPortableDeviceObjectIDs** pEnu
 			if (SUCCEEDED(hr2) && pObjectProperties) {
 				WCHAR showname[MAX_PATH];
 				PickObjectDisplayName(pObjectProperties, showname, MAX_PATH);
-				pObjectProperties->Release();
-				pObjectProperties=NULL;
+				SAFE_RELEASE(pObjectProperties);
 
 				if (wcscmp(showname,pname)==0) {  //found!!
 					AddNameToCache(wcSearch,pdirstart,szObjectIDArray[i],time);
-					pEnumObjectIDs->Release();
-					pEnumObjectIDs=NULL;
+					SAFE_RELEASE(pEnumObjectIDs);
 
 					CoTaskMemFree(LastParentName);
 					LastParentName=wstrnew(szObjectIDArray[i]);
@@ -859,17 +849,17 @@ HRESULT GetFolderIDFromPathName(LPWSTR pPath,IEnumPortableDeviceObjectIDs** pEnu
 							*pEnumObjectIDsRetVal=pEnumObjectIDs;
 						if (pPropertiesRetVal)
 							*pPropertiesRetVal=pProperties;
-						else if (pProperties)
-							pProperties->Release();
+						else
+							SAFE_RELEASE(pProperties);
 						if (pDeviceContent)
 							*pDeviceContent=pContent;
 						else
-							pContent->Release();
+							SAFE_RELEASE(pContent);
 						if (pStorageIDRetVal)
 							*pStorageIDRetVal=LastParentName;
 						else
 							CoTaskMemFree(LastParentName);
-						pPropertiesToRead->Release();
+						SAFE_RELEASE(pPropertiesToRead);
 						return S_OK;
 					}
 				}
@@ -879,14 +869,10 @@ HRESULT GetFolderIDFromPathName(LPWSTR pPath,IEnumPortableDeviceObjectIDs** pEnu
 		for (i=0;i<cFetched;i++)
 			CoTaskMemFree(szObjectIDArray[i]);
 	}
-	if (pPropertiesToRead)
-		pPropertiesToRead->Release();
-	if (pProperties)
-		pProperties->Release();
-	if (pEnumObjectIDs)
-		pEnumObjectIDs->Release();
-	if (pContent)
-		pContent->Release();
+	SAFE_RELEASE(pPropertiesToRead);
+	SAFE_RELEASE(pProperties);
+	SAFE_RELEASE(pEnumObjectIDs);
+	SAFE_RELEASE(pContent);
 	if (LastParentName)
 		CoTaskMemFree(LastParentName);
 	return E_FAIL;
@@ -1079,14 +1065,14 @@ static BOOL QueryOpenedDeviceIdentity(IPortableDevice* dev, WCHAR* model, DWORD 
 		return FALSE;
 	IPortableDeviceProperties* props=NULL;
 	HRESULT hr=content->Properties(&props);
-	content->Release();
+	SAFE_RELEASE(content);
 	if (FAILED(hr) || !props)
 		return FALSE;
 	IPortableDeviceKeyCollection* keys=NULL;
 	hr=CoCreateInstance(CLSID_PortableDeviceKeyCollection, NULL, CLSCTX_INPROC_SERVER,
 		IID_IPortableDeviceKeyCollection, (void**)&keys);
 	if (FAILED(hr) || !keys) {
-		props->Release();
+		SAFE_RELEASE(props);
 		return FALSE;
 	}
 	keys->Add(WPD_DEVICE_MODEL);
@@ -1094,8 +1080,8 @@ static BOOL QueryOpenedDeviceIdentity(IPortableDevice* dev, WCHAR* model, DWORD 
 	keys->Add(WPD_DEVICE_FRIENDLY_NAME);
 	IPortableDeviceValues* v=NULL;
 	hr=props->GetValues(WPD_DEVICE_OBJECT_ID, keys, &v);
-	keys->Release();
-	props->Release();
+	SAFE_RELEASE(keys);
+	SAFE_RELEASE(props);
 	if (FAILED(hr) || !v)
 		return FALSE;
 	if (model && mcch)
@@ -1104,7 +1090,7 @@ static BOOL QueryOpenedDeviceIdentity(IPortableDevice* dev, WCHAR* model, DWORD 
 		CopyWpdPropString(v, WPD_DEVICE_MANUFACTURER, mfr, frcch);
 	if (friendly && fcch)
 		CopyWpdPropString(v, WPD_DEVICE_FRIENDLY_NAME, friendly, fcch);
-	v->Release();
+	SAFE_RELEASE(v);
 	return (model && model[0]) || (mfr && mfr[0]) || (friendly && friendly[0]);
 }
 
@@ -1382,12 +1368,8 @@ static void ReleaseBatchValues(pLastFindStuct lf)
 {
 	if (!lf)
 		return;
-	for (DWORD i=0;i<NUM_OBJECTS_TO_REQUEST;i++) {
-		if (lf->szObjectValues[i]) {
-			lf->szObjectValues[i]->Release();
-			lf->szObjectValues[i]=NULL;
-		}
-	}
+	for (DWORD i=0;i<NUM_OBJECTS_TO_REQUEST;i++)
+		SAFE_RELEASE(lf->szObjectValues[i]);
 }
 
 class CBulkCb : public IPortableDevicePropertiesBulkCallback
@@ -1450,8 +1432,7 @@ public:
 			if (id) {
 				for (DWORD k=0;k<m_lf->szObjectIDsFetched;k++) {
 					if (m_lf->szObjectIDArray[k] && wcscmp(m_lf->szObjectIDArray[k],id)==0) {
-						if (m_lf->szObjectValues[k])
-							m_lf->szObjectValues[k]->Release();
+						SAFE_RELEASE(m_lf->szObjectValues[k]);
 						m_lf->szObjectValues[k]=v;
 						kept=TRUE;
 						break;
@@ -1460,7 +1441,7 @@ public:
 				CoTaskMemFree(id);
 			}
 			if (!kept)
-				v->Release();
+				SAFE_RELEASE(v);
 		}
 		return S_OK;
 	}
@@ -1488,7 +1469,7 @@ static void PrefetchBatchValues(pLastFindStuct lf)
 	IPortableDevicePropVariantCollection* ids=NULL;
 	if (FAILED(CoCreateInstance(CLSID_PortableDevicePropVariantCollection,NULL,CLSCTX_INPROC_SERVER,
 		IID_IPortableDevicePropVariantCollection,(void**)&ids))) {
-		bulk->Release();
+		SAFE_RELEASE(bulk);
 		return;
 	}
 	for (DWORD i=0;i<lf->szObjectIDsFetched;i++) {
@@ -1514,9 +1495,9 @@ static void PrefetchBatchValues(pLastFindStuct lf)
 		}
 	} else
 		g_bulkDisabled=TRUE;
-	cb->Release();
-	ids->Release();
-	bulk->Release();
+	SAFE_RELEASE(cb);
+	SAFE_RELEASE(ids);
+	SAFE_RELEASE(bulk);
 }
 
 void EnsureWpdEventsAdvised(void)
@@ -1659,7 +1640,7 @@ void PopulateFindDataW(PWSTR szObject,pLastFindStuct lf,WIN32_FIND_DATAW *FindDa
 					}
 				}
 				if (ownProps)
-					pObjectProperties->Release();
+					SAFE_RELEASE(pObjectProperties);
 			}
 		}
 	} __except (true) {
@@ -1770,8 +1751,8 @@ HANDLE __stdcall FsFindFirstW(WCHAR* Path,WIN32_FIND_DATAW *FindData)
 			hr = pEnumObjectIDs->Next(NUM_OBJECTS_TO_REQUEST,lf->szObjectIDArray,&lf->szObjectIDsFetched);
 			if (!SUCCEEDED(hr) || lf->szObjectIDsFetched==0) {
 				free(lf);
-				pEnumObjectIDs->Release();
-				pProperties->Release();
+				SAFE_RELEASE(pEnumObjectIDs);
+				SAFE_RELEASE(pProperties);
 				UnlockPlugin();
 				SetLastError(ERROR_NO_MORE_FILES);
 				LogProc(PluginNumber,MSGTYPE_OPERATIONCOMPLETE,"Directory is empty!");
@@ -1879,10 +1860,8 @@ BOOL __stdcall FsFindNextW(HANDLE Hdl,WIN32_FIND_DATAW *FindData)
 					lf->szObjectIDArray[i]=NULL;
 				}
 				lf->szObjectIDsFetched=0;
-				lf->pEnumObjectIDs->Release();
-				lf->pEnumObjectIDs=NULL;
-				lf->pProperties->Release();
-				lf->pProperties=NULL;
+				SAFE_RELEASE(lf->pEnumObjectIDs);
+				SAFE_RELEASE(lf->pProperties);
 				UnlockPlugin();
 				return false;
 			}
@@ -1912,18 +1891,9 @@ int __stdcall FsFindClose(HANDLE Hdl)
 		AppleMdFindClose(lf->appleFind);
 		lf->appleFind=NULL;
 	}
-	if (lf->pEnumObjectIDs) {
-		lf->pEnumObjectIDs->Release();
-		lf->pEnumObjectIDs=NULL;
-	}
-	if (lf->pProperties) {
-		lf->pProperties->Release();
-		lf->pProperties=NULL;
-	}
-	if (lf->pPropertiesToRead) {
-		lf->pPropertiesToRead->Release();
-		lf->pPropertiesToRead=NULL;
-	}
+	SAFE_RELEASE(lf->pEnumObjectIDs);
+	SAFE_RELEASE(lf->pProperties);
+	SAFE_RELEASE(lf->pPropertiesToRead);
 	for (DWORD i=0;i<lf->szObjectIDsFetched;i++) {
 		if (lf->szObjectIDArray[i])
 			CoTaskMemFree(lf->szObjectIDArray[i]);
@@ -1963,8 +1933,8 @@ void FreeDeviceList()
 			CoTaskMemFree(StoredPnpDeviceIDs[i]);
 		if (StoredPnPFriendlyNames)
 			CoTaskMemFree(StoredPnPFriendlyNames[i]);
-		if (StoredDevices && StoredDevices[i])
-			StoredDevices[i]->Release();
+		if (StoredDevices)
+			SAFE_RELEASE(StoredDevices[i]);
 	}
 	if (StoredPnpDeviceIDs)
 		free(StoredPnpDeviceIDs);
@@ -1988,8 +1958,7 @@ void FreeDeviceList()
 void FreeAllDevices()
 {
 	FreeDeviceList();
-	if (pDevMgr)
-		pDevMgr->Release();    // we must release this too, otherwise new devices are not seen!
+	SAFE_RELEASE(pDevMgr);    // we must release this too, otherwise new devices are not seen!
 	pDevMgr=NULL;
 	initialized=false;
 }
@@ -2059,7 +2028,7 @@ int NameExistsInEnum(IEnumPortableDeviceObjectIDs* pEnumObjectIDs,PWSTR pSearchN
 					PickObjectDisplayName(pObjectProperties, showname, MAX_PATH);
 					if (showname[0] && wcscmp(showname,pSearchName)==0)
 						match=IsWpdFolderObject(pObjectProperties) ? 2 : 1;
-					pObjectProperties->Release();
+					SAFE_RELEASE(pObjectProperties);
 					if (match) {
 						if (pReturnedObjectId) {
 							*pReturnedObjectId=szObjectIDArray[i];
@@ -2077,7 +2046,7 @@ int NameExistsInEnum(IEnumPortableDeviceObjectIDs* pEnumObjectIDs,PWSTR pSearchN
 		} else
 			break;
 	} while (cFetched==ArraySize);
-	pPropertiesToRead->Release();
+	SAFE_RELEASE(pPropertiesToRead);
 	return match;
 }
 
@@ -2144,17 +2113,14 @@ BOOL __stdcall FsMkDirW(WCHAR* Path)
 					}
 					if (NewObject)
 						CoTaskMemFree(NewObject);
-					pValues->Release();
+					SAFE_RELEASE(pValues);
 				}
 			}
 			if (pStorageID)
 				CoTaskMemFree(pStorageID);
-			if (pDeviceContent)
-				pDeviceContent->Release();
-			if (pEnumObjectIDs)
-				pEnumObjectIDs->Release();
-			if (pProperties)
-				pProperties->Release();
+			SAFE_RELEASE(pDeviceContent);
+			SAFE_RELEASE(pEnumObjectIDs);
+			SAFE_RELEASE(pProperties);
 		}
 	}
 	return result;
@@ -2230,7 +2196,7 @@ BOOL __stdcall FsDeleteFileW(WCHAR* RemoteName)
 						}
 					}
 					PropVariantClear(&pv);
-					pCollection->Release();
+					SAFE_RELEASE(pCollection);
 				}
 			}
 		}
@@ -2238,12 +2204,9 @@ BOOL __stdcall FsDeleteFileW(WCHAR* RemoteName)
 			CoTaskMemFree(pItemStorageID);
 		if (pStorageID)
 			CoTaskMemFree(pStorageID);
-		if (pDeviceContent)
-			pDeviceContent->Release();
-		if (pEnumObjectIDs)
-			pEnumObjectIDs->Release();
-		if (pProperties)
-			pProperties->Release();
+		SAFE_RELEASE(pDeviceContent);
+		SAFE_RELEASE(pEnumObjectIDs);
+		SAFE_RELEASE(pProperties);
 	}
 	return result;
 }
@@ -2377,10 +2340,8 @@ int __stdcall FsRenMovFileW(WCHAR* OldName,WCHAR* NewName,BOOL Move,BOOL OverWri
 						result=FS_FILE_NOTSUPPORTED;
 					else
 						result=FS_FILE_WRITEERROR;
-					if (pObjectProperties)
-						pObjectProperties->Release();
-					if (pResultProperties)
-						pResultProperties->Release();
+					SAFE_RELEASE(pObjectProperties);
+					SAFE_RELEASE(pResultProperties);
 				}
 			}
 		} else {  // !samedir
@@ -2433,8 +2394,7 @@ int __stdcall FsRenMovFileW(WCHAR* OldName,WCHAR* NewName,BOOL Move,BOOL OverWri
 							result=FS_FILE_NOTSUPPORTED;
 						PropVariantClear(&pv);
 					}
-					if (pCollection)
-						pCollection->Release();
+					SAFE_RELEASE(pCollection);
 				}
 			}
 		}
@@ -2444,18 +2404,12 @@ int __stdcall FsRenMovFileW(WCHAR* OldName,WCHAR* NewName,BOOL Move,BOOL OverWri
 			CoTaskMemFree(pStorageID);
 		if (pStorageID2)
 			CoTaskMemFree(pStorageID2);
-		if (pDeviceContent)
-			pDeviceContent->Release();
-		if (pDeviceContent2)
-			pDeviceContent2->Release();
-		if (pEnumObjectIDs)
-			pEnumObjectIDs->Release();
-		if (pEnumObjectIDs2)
-			pEnumObjectIDs2->Release();
-		if (pProperties)
-			pProperties->Release();
-		if (pProperties2)
-			pProperties2->Release();
+		SAFE_RELEASE(pDeviceContent);
+		SAFE_RELEASE(pDeviceContent2);
+		SAFE_RELEASE(pEnumObjectIDs);
+		SAFE_RELEASE(pEnumObjectIDs2);
+		SAFE_RELEASE(pProperties);
+		SAFE_RELEASE(pProperties2);
 	}
 	if (result==FS_FILE_OK) {
 		result=ProgressProcT(PluginNumber,OldName,NewName,100);
@@ -2619,14 +2573,11 @@ int __stdcall FsGetFileW(WCHAR* RemoteName,WCHAR* LocalName,int CopyFlags,Remote
 			}
 		}
 	}
-	if (pStream)
-		pStream->Release();
-	if (pResources)
-		pResources->Release();
+	SAFE_RELEASE(pStream);
+	SAFE_RELEASE(pResources);
 	if (pItemStorageID)
 		CoTaskMemFree(pItemStorageID);
-	if (pDeviceContent)
-		pDeviceContent->Release();
+	SAFE_RELEASE(pDeviceContent);
 	SetCancelDevice(NULL);
 	UnlockPlugin();
 	return result;
@@ -2818,7 +2769,7 @@ int __stdcall FsPutFileW(WCHAR* LocalName,WCHAR* RemoteName,int CopyFlags)
 						pv.pwszVal=wstrnew(pItemStorageID);
 						pCollection->Add(&pv);
 						hr = pDeviceContent->Delete(PORTABLE_DEVICE_DELETE_NO_RECURSION,pCollection,NULL);
-						pCollection->Release();
+						SAFE_RELEASE(pCollection);
 						if (hr == S_FALSE)
 							hr=E_FAIL;
 					}
@@ -2973,8 +2924,7 @@ int __stdcall FsPutFileW(WCHAR* LocalName,WCHAR* RemoteName,int CopyFlags)
 								IPortableDeviceKeyCollection* pKeys=NULL;
 								IPortableDeviceResources* pResources=NULL;
 								if (result!=FS_FILE_OK || !pPreviewImage || !GdiPlusInitialize()) {
-									pStream->Release();
-									pStream=NULL;
+									SAFE_RELEASE(pStream);
 								} else {
 									HRESULT hr2=S_OK;
 									CONST GUID* imgtype=NULL;
@@ -2994,12 +2944,10 @@ int __stdcall FsPutFileW(WCHAR* LocalName,WCHAR* RemoteName,int CopyFlags)
 										HRESULT hr2=pStream->QueryInterface(IID_IPortableDeviceDataStream,(void**)&pResultingStream);
 									else
 										err=1;
-									pStream->Release();
-									pStream=NULL;
+									SAFE_RELEASE(pStream);
 									if (SUCCEEDED(hr2)) {
 										hr2=pResultingStream->GetObjectID(&NewId);
-										pResultingStream->Release();
-										pResultingStream=NULL;
+										SAFE_RELEASE(pResultingStream);
 									} else if (err==0)
 										err=2;
 									if (SUCCEEDED(hr2)) {
@@ -3057,7 +3005,7 @@ int __stdcall FsPutFileW(WCHAR* LocalName,WCHAR* RemoteName,int CopyFlags)
 														PreviewImageHeight=0;
 													 Gdiplus::DllExports::GdipDisposeImage(GdiplusImage);
 												}
-												fDataStream->Release();
+												SAFE_RELEASE(fDataStream);
 											} else
 												GlobalFree(DataHandle);
 										}
@@ -3109,8 +3057,7 @@ int __stdcall FsPutFileW(WCHAR* LocalName,WCHAR* RemoteName,int CopyFlags)
 											hr2=hr3;
 											err=17;
 										}
-										pStream->Release();
-										pStream=NULL;
+										SAFE_RELEASE(pStream);
 									} else if (err==0)
 										err=15;
 									if (err) {
@@ -3129,18 +3076,12 @@ int __stdcall FsPutFileW(WCHAR* LocalName,WCHAR* RemoteName,int CopyFlags)
 										}
 									}
 								}
-								if (spResInfo)
-									spResInfo->Release();
-								if (pKeys)
-									pKeys->Release();
-								if (pResources)
-									pResources->Release();
+								SAFE_RELEASE(spResInfo);
+								SAFE_RELEASE(pKeys);
+								SAFE_RELEASE(pResources);
 								if (NewId)
 									CoTaskMemFree(NewId);
-								if (pStream) {
-									pStream->Release();
-									pStream=NULL;
-								}
+								SAFE_RELEASE(pStream);
 
 /* Doesn't work, returns access denied
 								// set date again after copying!
@@ -3170,17 +3111,12 @@ int __stdcall FsPutFileW(WCHAR* LocalName,WCHAR* RemoteName,int CopyFlags)
 										PropVariantClear(&pv);
 										CoTaskMemFree(pItemStorageID2);
 									}
-									if (pEnumObjectIDs2)
-										pEnumObjectIDs2->Release();
-									if (pProperties2)
-										pProperties2->Release();
+									SAFE_RELEASE(pEnumObjectIDs2);
+									SAFE_RELEASE(pProperties2);
 								}
 */
 							} else {
-								if (pStream) {
-									pStream->Release();
-									pStream=NULL;
-								}
+								SAFE_RELEASE(pStream);
 								result=FS_FILE_WRITEERROR;
 							}
 							CloseHandle(f);
@@ -3189,7 +3125,7 @@ int __stdcall FsPutFileW(WCHAR* LocalName,WCHAR* RemoteName,int CopyFlags)
 								FreeAlbumArt(pPreviewImage);
 							pPreviewImage=NULL;
 						}
-						pValues->Release();
+						SAFE_RELEASE(pValues);
 					}
 				}
 			}
@@ -3197,12 +3133,9 @@ int __stdcall FsPutFileW(WCHAR* LocalName,WCHAR* RemoteName,int CopyFlags)
 				CoTaskMemFree(pItemStorageID);
 			if (pStorageID)
 				CoTaskMemFree(pStorageID);
-			if (pDeviceContent)
-				pDeviceContent->Release();
-			if (pEnumObjectIDs)
-				pEnumObjectIDs->Release();
-			if (pProperties)
-				pProperties->Release();
+			SAFE_RELEASE(pDeviceContent);
+			SAFE_RELEASE(pEnumObjectIDs);
+			SAFE_RELEASE(pProperties);
 		}
 	}
 	SetCancelDevice(NULL);

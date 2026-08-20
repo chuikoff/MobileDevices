@@ -5,6 +5,10 @@
 #include <PortableDevice.h>
 #include "cunicode.h"
 
+#ifndef SAFE_RELEASE
+#define SAFE_RELEASE(p) do { if (p) { (p)->Release(); (p)=NULL; } } while (0)
+#endif
+
 BOOL InitFunctionsIfNeeded(BOOL trueconnect);
 HRESULT GetFolderIDFromPathName(LPWSTR pPath, IEnumPortableDeviceObjectIDs** pEnumObjectIDsRetVal,
 	IPortableDeviceProperties** pPropertiesRetVal, IPortableDeviceContent** pDeviceContent, LPWSTR* pStorageIDRetVal);
