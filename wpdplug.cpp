@@ -2497,14 +2497,15 @@ int __stdcall FsGetFileW(WCHAR* RemoteName,WCHAR* LocalName,int CopyFlags,Remote
 				&OptimalBufferSize,
 				&pStream);
 		if SUCCEEDED(hr) {
-			//loop
+			if (OptimalBufferSize<1024)
+				OptimalBufferSize=1024;
 			char* buf=(char*)malloc(OptimalBufferSize);
-			if (buf) {
+			if (!buf) {
+				result=FS_FILE_READERROR;
+			} else {
 				DWORD BytesRead,BytesWritten;
 				HANDLE f=CreateFileT(LocalName,GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE,NULL,CREATE_ALWAYS,0,NULL);
 				if (f!=INVALID_HANDLE_VALUE) {
-					if (OptimalBufferSize<1024)
-						OptimalBufferSize=1024;
 					DWORD lasttime=GetTickCount();
 					DWORD thistime;
 					while (1) {
@@ -2852,7 +2853,9 @@ int __stdcall FsPutFileW(WCHAR* LocalName,WCHAR* RemoteName,int CopyFlags)
 								if (OptimalBufferSize<1024)
 									OptimalBufferSize=1024;
 								char* buf=(char*)malloc(OptimalBufferSize);
-								if (buf) {
+								if (!buf) {
+									result=FS_FILE_READERROR;
+								} else {
 									DWORD BytesRead,BytesWritten;
 									DWORD lasttime=GetTickCount();
 									DWORD thistime;
