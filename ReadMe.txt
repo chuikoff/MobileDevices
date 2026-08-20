@@ -1,4 +1,4 @@
-MTP Devices plugin v2.3.1
+MTP Devices plugin v2.3.2
 =======================
 Modified from Windows Media Audio 2 (wpdplug) by Christian Ghisler.
 
@@ -38,6 +38,8 @@ read; new settings are stored under [MTPDevices].
 
 History
 =======
+20260820 Release v2.3.2
+20260820 Changed: Android root name uses device model, not USB1
 20260820 Release v2.3.1
 20260820 Fixed: Panic Logs hang and TC hanging again after restart (drop Apple session, list panics off UI thread)
 20260820 Release v2.3.0

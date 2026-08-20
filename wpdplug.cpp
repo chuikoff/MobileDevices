@@ -832,6 +832,163 @@ HRESULT GetFolderIDFromPathName(LPWSTR pPath,IEnumPortableDeviceObjectIDs** pEnu
 	return E_FAIL;
 }
 
+static BOOL NameContainsI(LPCWSTR hay, LPCWSTR needle)
+{
+	if (!hay || !needle || !needle[0])
+		return FALSE;
+	size_t n=wcslen(needle);
+	for (LPCWSTR p=hay; *p; p++) {
+		if (_wcsnicmp(p, needle, n)==0)
+			return TRUE;
+	}
+	return FALSE;
+}
+
+static BOOL IsGenericWpdName(LPCWSTR name)
+{
+	if (!name || !name[0])
+		return TRUE;
+	WCHAR buf[256];
+	wcslcpy(buf, name, 256);
+	WCHAR* s=buf;
+	while (*s==L' ' || *s==L'\t')
+		s++;
+	WCHAR* e=s+wcslen(s);
+	while (e>s && (e[-1]==L' ' || e[-1]==L'\t'))
+		*--e=0;
+	if (!s[0])
+		return TRUE;
+	if (_wcsicmp(s, L"USB")==0 || _wcsicmp(s, L"MTP")==0 ||
+		_wcsicmp(s, L"Android")==0 || _wcsicmp(s, L"Generic")==0 ||
+		_wcsicmp(s, L"Unknown")==0 || _wcsicmp(s, L"Device")==0)
+		return TRUE;
+	if (_wcsnicmp(s, L"USB", 3)==0) {
+		LPCWSTR p=s+3;
+		while (*p==L' ' || *p==L'-' || *p==L'_' || *p==L'#')
+			p++;
+		if (!p[0])
+			return TRUE;
+		BOOL digits=TRUE;
+		for (LPCWSTR q=p; *q; q++) {
+			if (*q<L'0' || *q>L'9') {
+				digits=FALSE;
+				break;
+			}
+		}
+		if (digits)
+			return TRUE;
+	}
+	if (_wcsnicmp(s, L"Device", 6)==0) {
+		LPCWSTR p=s+6;
+		while (*p==L' ' || *p==L'-' || *p==L'_' || *p==L'#')
+			p++;
+		if (!p[0])
+			return TRUE;
+		BOOL digits=TRUE;
+		for (LPCWSTR q=p; *q; q++) {
+			if (*q<L'0' || *q>L'9') {
+				digits=FALSE;
+				break;
+			}
+		}
+		if (digits)
+			return TRUE;
+	}
+	static const WCHAR* gen[]={
+		L"MTP Device", L"MTP USB", L"USB MTP",
+		L"Portable Device", L"Portable Devices",
+		L"Android Phone", L"Android Device", L"Android Composite",
+		L"USB Composite", L"Composite Device",
+		L"Unknown Device", L"Generic Device",
+		L"ADB Interface", L"ADB Composite"
+	};
+	for (int i=0;i<(int)(sizeof(gen)/sizeof(gen[0]));i++) {
+		if (NameContainsI(s, gen[i]))
+			return TRUE;
+	}
+	return FALSE;
+}
+
+static BOOL QueryWpdMgrString(IPortableDeviceManager* mgr, LPCWSTR pnpId, int kind, WCHAR* out, DWORD cch)
+{
+	if (out && cch)
+		out[0]=0;
+	if (!mgr || !pnpId || !out || cch<2)
+		return FALSE;
+	WCHAR tmp[256];
+	tmp[0]=0;
+	DWORD n=0;
+	HRESULT hr=E_FAIL;
+	if (kind==0)
+		hr=mgr->GetDeviceFriendlyName((LPWSTR)pnpId, NULL, &n);
+	else if (kind==1)
+		hr=mgr->GetDeviceDescription((LPWSTR)pnpId, NULL, &n);
+	else
+		hr=mgr->GetDeviceManufacturer((LPWSTR)pnpId, NULL, &n);
+	if (SUCCEEDED(hr) && n>1 && n<=256) {
+		if (kind==0)
+			hr=mgr->GetDeviceFriendlyName((LPWSTR)pnpId, tmp, &n);
+		else if (kind==1)
+			hr=mgr->GetDeviceDescription((LPWSTR)pnpId, tmp, &n);
+		else
+			hr=mgr->GetDeviceManufacturer((LPWSTR)pnpId, tmp, &n);
+	} else {
+		n=256;
+		if (kind==0)
+			hr=mgr->GetDeviceFriendlyName((LPWSTR)pnpId, tmp, &n);
+		else if (kind==1)
+			hr=mgr->GetDeviceDescription((LPWSTR)pnpId, tmp, &n);
+		else
+			hr=mgr->GetDeviceManufacturer((LPWSTR)pnpId, tmp, &n);
+	}
+	if (FAILED(hr) || tmp[0]==0)
+		return FALSE;
+	SanitizeFriendlyName(tmp);
+	WCHAR* s=tmp;
+	while (*s==L' ' || *s==L'\t')
+		s++;
+	WCHAR* e=s+wcslen(s);
+	while (e>s && (e[-1]==L' ' || e[-1]==L'\t'))
+		*--e=0;
+	if (!s[0])
+		return FALSE;
+	wcslcpy(out, s, cch);
+	return TRUE;
+}
+
+static void PickWpdDisplayName(IPortableDeviceManager* mgr, LPCWSTR pnpId, DWORD index, WCHAR* out, DWORD cch)
+{
+	if (!out || cch<2)
+		return;
+	out[0]=0;
+	WCHAR friendly[256]=L"", desc[256]=L"", mfr[256]=L"";
+	QueryWpdMgrString(mgr, pnpId, 0, friendly, 256);
+	QueryWpdMgrString(mgr, pnpId, 1, desc, 256);
+	QueryWpdMgrString(mgr, pnpId, 2, mfr, 256);
+
+	WCHAR model[256]=L"";
+	if (!IsGenericWpdName(desc))
+		wcslcpy(model, desc, 256);
+	else if (!IsGenericWpdName(friendly))
+		wcslcpy(model, friendly, 256);
+
+	if (model[0]) {
+		if (!IsGenericWpdName(mfr) && wcslen(mfr)>=2 && !NameContainsI(model, mfr))
+			swprintf_s(out, cch, L"%s %s", mfr, model);
+		else
+			wcslcpy(out, model, cch);
+		return;
+	}
+	if (!IsGenericWpdName(mfr)) {
+		wcslcpy(out, mfr, cch);
+		return;
+	}
+	if (pnpId && NameContainsI(pnpId, L"usb"))
+		swprintf_s(out, cch, L"USB%d", index+1);
+	else
+		swprintf_s(out, cch, L"Device%d", index+1);
+}
+
 BOOL LoadAllDevices()
 {
 	RegisterForEventNotifications();
@@ -865,24 +1022,13 @@ BOOL LoadAllDevices()
 		connected=true;
 
 		for (DWORD i=0;i<StoredNumIds;i++) {
-			DWORD friendlyNameLength=0;
-			hr=pDevMgr->GetDeviceFriendlyName(StoredPnpDeviceIDs[i], NULL, &friendlyNameLength); 
-			if (SUCCEEDED(hr) && friendlyNameLength>0 && friendlyNameLength<256) {
-				StoredPnPFriendlyNames[i] = (PWSTR)CoTaskMemRealloc(NULL,friendlyNameLength*sizeof(WCHAR));
-				hr=pDevMgr->GetDeviceFriendlyName(StoredPnpDeviceIDs[i], StoredPnPFriendlyNames[i], &friendlyNameLength); 
-				if (FAILED(hr)) {
-					CoTaskMemFree(StoredPnPFriendlyNames[i]);
-					StoredPnPFriendlyNames[i]=NULL;
-				} else {
-					SanitizeFriendlyName(StoredPnPFriendlyNames[i]);
-				}
-			} else
-				hr=E_FAIL;
-			if (FAILED(hr) || StoredPnPFriendlyNames[i]==NULL) {
-				StoredPnPFriendlyNames[i] = (PWSTR)CoTaskMemRealloc(NULL,16*sizeof(WCHAR));
-				if (StoredPnpDeviceIDs[i] && wcsstr(StoredPnpDeviceIDs[i],L"usb"))
-					swprintf_s(StoredPnPFriendlyNames[i],16,L"USB%d",i+1);
-				else
+			WCHAR showname[256];
+			PickWpdDisplayName(pDevMgr, StoredPnpDeviceIDs[i], i, showname, 256);
+			SanitizeFriendlyName(showname);
+			StoredPnPFriendlyNames[i]=wstrnew(showname);
+			if (!StoredPnPFriendlyNames[i]) {
+				StoredPnPFriendlyNames[i]=(PWSTR)CoTaskMemRealloc(NULL,16*sizeof(WCHAR));
+				if (StoredPnPFriendlyNames[i])
 					swprintf_s(StoredPnPFriendlyNames[i],16,L"Device%d",i+1);
 			}
 			MakeFriendlyNameUnique(i);
