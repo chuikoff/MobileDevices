@@ -1579,17 +1579,45 @@ static BOOL EnsureAppAfc(ApplePhone* p, LPCWSTR appName)
 	return TRUE;
 }
 
-static void RunCrashReportMover(ApplePhone* p)
+struct PanicOpenJob {
+	ApplePhone* p;
+	HANDLE done;
+	volatile LONG cancel;
+	BOOL ok;
+};
+
+static DWORD WINAPI PanicOpenThread(LPVOID arg)
 {
+	PanicOpenJob* j=(PanicOpenJob*)arg;
+	int dummy=0;
+	StartNamedService(j->p, "com.apple.crashreportmover", &dummy);
 	int sock=0;
-	if (!StartNamedService(p, "com.apple.crashreportmover", &sock) || sock==0)
-		return;
-	char ping[8]={0};
-	DWORD t=4000;
-	setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (char*)&t, sizeof(t));
-	__try {
-		recv(sock, ping, 4, 0);
-	} __except(EXCEPTION_EXECUTE_HANDLER) {}
+	afc_connection conn=NULL;
+	BOOL ok=FALSE;
+	if (!j->cancel && StartNamedService(j->p, "com.apple.crashreportcopymobile", &sock) && sock) {
+		__try {
+			if (!j->cancel && pAFCConnectionOpen(sock, 0, &conn)==0 && conn)
+				ok=TRUE;
+		} __except(EXCEPTION_EXECUTE_HANDLER) {
+			ok=FALSE;
+			conn=NULL;
+		}
+	}
+	if (j->cancel) {
+		if (conn && pAFCConnectionClose) {
+			__try { pAFCConnectionClose(conn); } __except(EXCEPTION_EXECUTE_HANDLER) {}
+		}
+		if (j->done)
+			SetEvent(j->done);
+		return 0;
+	}
+	if (ok) {
+		j->p->panicAfc=conn;
+		j->p->panicSock=sock;
+	}
+	j->ok=ok;
+	SetEvent(j->done);
+	return 0;
 }
 
 static BOOL EnsurePanicAfc(ApplePhone* p)
@@ -1600,24 +1628,29 @@ static BOOL EnsurePanicAfc(ApplePhone* p)
 		return TRUE;
 	if (!EnsureLockdown(p) || !pAFCConnectionOpen)
 		return FALSE;
-	RunCrashReportMover(p);
-	int sock=0;
-	if (!StartNamedService(p, "com.apple.crashreportcopymobile", &sock) || sock==0)
+	PanicOpenJob* j=(PanicOpenJob*)calloc(1, sizeof(PanicOpenJob));
+	if (!j)
 		return FALSE;
-	afc_connection conn=NULL;
-	BOOL ok=FALSE;
-	__try {
-		if (pAFCConnectionOpen(sock, 0, &conn)==0 && conn)
-			ok=TRUE;
-	} __except(EXCEPTION_EXECUTE_HANDLER) {
-		conn=NULL;
-		ok=FALSE;
+	j->p=p;
+	j->done=CreateEventW(NULL, TRUE, FALSE, NULL);
+	HANDLE th=CreateThread(NULL, 0, PanicOpenThread, j, 0, NULL);
+	if (!th) {
+		if (j->done) CloseHandle(j->done);
+		free(j);
+		return FALSE;
 	}
-	if (!ok)
-		return FALSE;
-	p->panicAfc=conn;
-	p->panicSock=sock;
-	return TRUE;
+	DWORD w=WaitForSingleObject(j->done, 5000);
+	if (w!=WAIT_OBJECT_0) {
+		InterlockedExchange(&j->cancel, 1);
+		CloseHandle(th);
+		return p->panicAfc!=NULL;
+	}
+	WaitForSingleObject(th, 1000);
+	BOOL ok=j->ok || p->panicAfc!=NULL;
+	CloseHandle(th);
+	CloseHandle(j->done);
+	free(j);
+	return ok;
 }
 
 static void JoinAfc(const char* prefix, const char* rel, char* out, int cch)
