@@ -1363,6 +1363,7 @@ HANDLE __stdcall FsFindFirstW(WCHAR* Path,WIN32_FIND_DATAW *FindData)
 		}
 
 		if (Path[1]==0) {  // Enum just the devices
+			AppleMdResetSessions();
 			DWORD total=StoredNumIds+(DWORD)AppleMdCount();
 			if (total==0) {
 				UnlockPlugin();
@@ -1656,6 +1657,7 @@ HRESULT DisConnectIfNeeded()
 
 BOOL __stdcall FsDisconnect(char* DisconnectRoot)
 {
+	AppleMdResetSessions();
 	DisConnectIfNeeded();
 	char buf1[MAX_PATH];
 	strlcpy(buf1,"DISCONNECT ",MAX_PATH);
@@ -2865,6 +2867,7 @@ int __stdcall FsExecuteFileW(HWND MainWin,WCHAR* RemoteName,WCHAR* Verb)
 		while (*cmd==' ')
 			cmd++;
 		if (_wcsicmp(cmd,L"refresh")==0 || _wcsicmp(cmd,L"reconnect")==0) {
+			AppleMdResetSessions();
 			DeviceEventReceived=true;
 			InterlockedExchange(&g_cacheDirty,0);
 			LogProcT(PluginNumber,MSGTYPE_OPERATIONCOMPLETE,L"REFRESH");

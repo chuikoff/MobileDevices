@@ -174,6 +174,8 @@ static BOOL g_loaded=FALSE;
 #define AFK_ROOT 1
 #define AFK_APPS 2
 #define AFK_AFC 3
+#define AFK_PANIC_CACHE 4
+#define APPLE_PANIC_MAX 256
 enum {
 	AR_ROOT=0,
 	AR_PHOTOS,
@@ -201,6 +203,9 @@ struct ApplePhone {
 	char appRoot[40];
 	afc_connection panicAfc;
 	int panicSock;
+	int nPanicEnt;
+	BOOL panicListed;
+	WIN32_FIND_DATAW panicEnt[APPLE_PANIC_MAX];
 	WCHAR name[128];
 	WCHAR udid[80];
 	WCHAR ios[40];
@@ -226,6 +231,7 @@ struct AppleFind {
 
 static void AppleLock() { if (g_appleCsInit) EnterCriticalSection(&g_appleCs); }
 static void AppleUnlock() { if (g_appleCsInit) LeaveCriticalSection(&g_appleCs); }
+static BOOL AppleTryLock() { return g_appleCsInit && TryEnterCriticalSection(&g_appleCs); }
 
 static CFStringRef CfStr(const char* utf8)
 {
@@ -433,6 +439,8 @@ static void ClosePanicAfc(ApplePhone* p)
 		p->panicAfc=NULL;
 	}
 	p->panicSock=0;
+	p->nPanicEnt=0;
+	p->panicListed=FALSE;
 }
 
 static BOOL EnsureLockdown(ApplePhone* p)
@@ -525,23 +533,39 @@ static BOOL EnsureSession(ApplePhone* p)
 	return TRUE;
 }
 
-static void ClosePhone(ApplePhone* p)
+static void DropPhoneSession(ApplePhone* p)
 {
 	if (!p)
 		return;
 	CloseAppAfc(p);
 	ClosePanicAfc(p);
 	if (p->afc && pAFCConnectionClose) {
-		pAFCConnectionClose(p->afc);
+		__try { pAFCConnectionClose(p->afc); } __except(EXCEPTION_EXECUTE_HANDLER) {}
 		p->afc=NULL;
 	}
 	if (p->session && pAMDeviceStopSession) {
-		pAMDeviceStopSession(p->dev);
+		__try { pAMDeviceStopSession(p->dev); } __except(EXCEPTION_EXECUTE_HANDLER) {}
 		p->session=FALSE;
 	}
-	if (p->dev && pAMDeviceDisconnect)
-		pAMDeviceDisconnect(p->dev);
+	if (p->dev && pAMDeviceDisconnect) {
+		__try { pAMDeviceDisconnect(p->dev); } __except(EXCEPTION_EXECUTE_HANDLER) {}
+	}
+}
+
+static void ClosePhone(ApplePhone* p)
+{
+	if (!p)
+		return;
+	DropPhoneSession(p);
 	p->napps=0;
+}
+
+void AppleMdResetSessions(void)
+{
+	AppleLock();
+	for (int i=0;i<g_nphones;i++)
+		DropPhoneSession(&g_phones[i]);
+	AppleUnlock();
 }
 
 static ApplePhone* FindPhoneByName(LPCWSTR name)
@@ -557,7 +581,9 @@ static void OnAppleNotify(am_device_notification_callback_info* info, void*)
 {
 	if (!info || !info->dev)
 		return;
-	AppleLock();
+	/* Must not block the CFRunLoop thread: StartService waits on it. */
+	if (!AppleTryLock())
+		return;
 	if (info->msg==ADNCI_MSG_CONNECTED) {
 		if (g_nphones>=APPLE_MAX) {
 			AppleUnlock();
@@ -1665,11 +1691,52 @@ static DWORD WINAPI PanicOpenThread(LPVOID arg)
 			SetEvent(j->done);
 		return 0;
 	}
-	if (ok) {
-		j->p->panicAfc=conn;
-		j->p->panicSock=0;
+	int nent=0;
+	WIN32_FIND_DATAW tmp[APPLE_PANIC_MAX];
+	memset(tmp, 0, sizeof(tmp));
+	if (ok && conn) {
+		afc_directory dir=NULL;
+		if (OpenAfcDir(conn, "/", &dir) || OpenAfcDir(conn, ".", &dir)) {
+			for (;;) {
+				char* name=NULL;
+				BOOL got=FALSE;
+				__try {
+					got=(pAFCDirectoryRead(conn, dir, &name)==0 && name && name[0]);
+				} __except(EXCEPTION_EXECUTE_HANDLER) {
+					got=FALSE;
+					name=NULL;
+				}
+				if (!got)
+					break;
+				if (!strcmp(name, ".") || !strcmp(name, ".."))
+					continue;
+				if (nent>=APPLE_PANIC_MAX)
+					break;
+				FillFindFromAfc(conn, ".", name, &tmp[nent]);
+				nent++;
+			}
+			if (dir && pAFCDirectoryClose) {
+				__try { pAFCDirectoryClose(conn, dir); } __except(EXCEPTION_EXECUTE_HANDLER) {}
+			}
+		}
 	}
-	j->ok=ok;
+	if (j->cancel) {
+		if (conn && pAFCConnectionClose) {
+			__try { pAFCConnectionClose(conn); } __except(EXCEPTION_EXECUTE_HANDLER) {}
+		}
+		if (j->done)
+			SetEvent(j->done);
+		return 0;
+	}
+	AppleLock();
+	j->p->panicAfc=ok ? conn : NULL;
+	j->p->panicSock=0;
+	j->p->nPanicEnt=nent;
+	j->p->panicListed=TRUE;
+	if (nent>0)
+		memcpy(j->p->panicEnt, tmp, nent*sizeof(tmp[0]));
+	AppleUnlock();
+	j->ok=ok && nent>=0;
 	SetEvent(j->done);
 	return 0;
 }
@@ -1678,8 +1745,10 @@ static BOOL EnsurePanicAfc(ApplePhone* p)
 {
 	if (!p)
 		return FALSE;
-	if (p->panicAfc)
+	if (p->panicListed && p->nPanicEnt>0)
 		return TRUE;
+	if (p->panicListed && p->nPanicEnt==0)
+		return FALSE;
 	if (!EnsureLockdown(p) || !pAFCConnectionOpen)
 		return FALSE;
 	PanicOpenJob* j=(PanicOpenJob*)calloc(1, sizeof(PanicOpenJob));
@@ -1696,8 +1765,13 @@ static BOOL EnsurePanicAfc(ApplePhone* p)
 	DWORD w=WaitForSingleObject(j->done, 5000);
 	if (w!=WAIT_OBJECT_0) {
 		InterlockedExchange(&j->cancel, 1);
+		AppleLock();
+		p->panicListed=TRUE;
+		if (p->nPanicEnt<0)
+			p->nPanicEnt=0;
+		AppleUnlock();
 		CloseHandle(th);
-		return p->panicAfc!=NULL;
+		return FALSE;
 	}
 	WaitForSingleObject(th, 1000);
 	BOOL ok=j->ok || p->panicAfc!=NULL;
@@ -1789,39 +1863,59 @@ BOOL AppleMdFindFirst(LPCWSTR deviceName, LPCWSTR relPath, WIN32_FIND_DATAW* fd,
 	int kind=ParseAppleRel(relPath, app, 128, afcPath, 1024);
 	AppleFind* f=NULL;
 
+	int phoneIdx=(int)(p-g_phones);
 	if (kind==AR_ROOT) {
-		f=NewFind((int)(p-g_phones), AFK_ROOT);
+		f=NewFind(phoneIdx, AFK_ROOT);
 		f->index=1;
 		FillDirFd(APPLE_PHOTOS, fd);
 		*out=(HANDLE)f;
 		AppleUnlock();
 		return TRUE;
 	}
+
+	/* Never call Apple StartService / AFCDirectoryOpen while holding AppleLock:
+	   CFRunLoop callbacks need the same lock. */
+	AppleUnlock();
+
 	if (kind==AR_APPS) {
-		RefreshApps(p);
+		RefreshApps(&g_phones[phoneIdx]);
+		AppleLock();
+		p=&g_phones[phoneIdx];
 		if (p->napps==0) {
 			AppleUnlock();
 			return FALSE;
 		}
-		f=NewFind((int)(p-g_phones), AFK_APPS);
+		f=NewFind(phoneIdx, AFK_APPS);
 		f->index=1;
 		FillDirFd(p->apps[0].name, fd);
 		*out=(HANDLE)f;
 		AppleUnlock();
 		return TRUE;
 	}
+	if (kind==AR_PANICS) {
+		EnsurePanicAfc(&g_phones[phoneIdx]);
+		AppleLock();
+		p=&g_phones[phoneIdx];
+		if (p->nPanicEnt<=0) {
+			AppleUnlock();
+			return FALSE;
+		}
+		f=NewFind(phoneIdx, AFK_PANIC_CACHE);
+		f->index=1;
+		*fd=p->panicEnt[0];
+		*out=(HANDLE)f;
+		AppleUnlock();
+		return TRUE;
+	}
 
 	afc_connection conn=NULL;
-	if (!ResolveAfc(p, relPath, &conn, afcPath, 1024, FALSE) || !conn) {
-		AppleUnlock();
+	if (!ResolveAfc(&g_phones[phoneIdx], relPath, &conn, afcPath, 1024, FALSE) || !conn)
 		return FALSE;
-	}
 	afc_directory dir=NULL;
-	if (!OpenAfcDir(conn, afcPath, &dir) || !dir) {
-		AppleUnlock();
+	if (!OpenAfcDir(conn, afcPath, &dir) || !dir)
 		return FALSE;
-	}
-	f=NewFind((int)(p-g_phones), AFK_AFC);
+	AppleLock();
+	f=NewFind(phoneIdx, AFK_AFC);
 	f->dir=dir;
 	f->conn=conn;
 	strcpy_s(f->afcPath, afcPath);
@@ -1868,6 +1962,16 @@ BOOL AppleMdFindNext(HANDLE h, WIN32_FIND_DATAW* fd)
 			return FALSE;
 		}
 		FillDirFd(p->apps[f->index].name, fd);
+		f->index++;
+		AppleUnlock();
+		return TRUE;
+	}
+	if (f->kind==AFK_PANIC_CACHE) {
+		if (f->index>=p->nPanicEnt) {
+			AppleUnlock();
+			return FALSE;
+		}
+		*fd=p->panicEnt[f->index];
 		f->index++;
 		AppleUnlock();
 		return TRUE;

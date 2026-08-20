@@ -4,6 +4,7 @@
 
 void AppleMdInit(void);
 void AppleMdShutdown(void);
+void AppleMdResetSessions(void);
 int AppleMdCount(void);
 BOOL AppleMdGetName(int index, WCHAR* name, int cch);
 BOOL AppleMdIsDeviceName(LPCWSTR name);
