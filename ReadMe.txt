@@ -1,4 +1,4 @@
-MTP Devices plugin v2.2.2
+MTP Devices plugin v2.2.3
 =======================
 Modified from Windows Media Audio 2 (wpdplug) by Christian Ghisler.
 
@@ -38,6 +38,9 @@ read; new settings are stored under [MTPDevices].
 
 History
 =======
+20260820 Release v2.2.3
+20260820 Added: iPhone battery and free space in device info
+20260820 Fixed: application documents via AMDeviceStartHouseArrestService
 20260819 Release v2.2.2
 20260819 Changed: iPhone icon is a pineapple; multi-size icons (16–256) for thumbnail view
 20260819 Release v2.2.1

@@ -185,6 +185,30 @@ int __stdcall FsContentGetValueW(WCHAR* FileName,int FieldIndex,int UnitIndex,vo
 	if (IsContentStop())
 		return ft_fieldempty;
 
+	if (FieldIndex==FIELD_FREE || FieldIndex==FIELD_CAPACITY || FieldIndex==FIELD_BATTERY) {
+		WCHAR dev[MAX_PATH];
+		const WCHAR* rp=FileName[0]=='\\' ? FileName+1 : FileName;
+		wcslcpy(dev, rp, MAX_PATH);
+		WCHAR* sl=wcschr(dev, '\\');
+		if (sl) sl[0]=0;
+		if (AppleMdIsDeviceName(dev)) {
+			PluginDeviceInfo inf;
+			if (!AppleMdFillInfo(dev, &inf))
+				return ft_fieldempty;
+			if (FieldIndex==FIELD_BATTERY) {
+				if (inf.battery<0)
+					return ft_fieldempty;
+				*(int*)FieldValue=inf.battery;
+				return ft_numeric_32;
+			}
+			if (inf.nstor<=0)
+				return ft_fieldempty;
+			ULONGLONG v=(FieldIndex==FIELD_FREE) ? inf.stor[0].freeBytes : inf.stor[0].capacityBytes;
+			*(INT64*)FieldValue=(INT64)v;
+			return ft_numeric_64;
+		}
+	}
+
 	IPortableDeviceValues* values=NULL;
 	HRESULT hr=GetValuesForPath(FileName,&values);
 	if (FAILED(hr) || !values)
