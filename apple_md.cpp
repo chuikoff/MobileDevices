@@ -168,6 +168,7 @@ static BOOL g_loaded=FALSE;
 #define APPLE_MAX_APPS 256
 #define APPLE_PHOTOS L"Photos"
 #define APPLE_APPS L"Applications"
+#define APPLE_PANICS L"Panic Logs"
 #define AFK_ROOT 1
 #define AFK_APPS 2
 #define AFK_AFC 3
@@ -177,7 +178,9 @@ enum {
 	AR_PHOTOS_REL,
 	AR_APPS,
 	AR_APP,
-	AR_APP_REL
+	AR_APP_REL,
+	AR_PANICS,
+	AR_PANICS_REL
 };
 struct AppleApp {
 	WCHAR name[128];
@@ -194,6 +197,8 @@ struct ApplePhone {
 	int appSock;
 	char appBundle[160];
 	char appRoot[40];
+	afc_connection panicAfc;
+	int panicSock;
 	WCHAR name[128];
 	WCHAR udid[80];
 	WCHAR ios[40];
@@ -409,12 +414,23 @@ static void CloseAppAfc(ApplePhone* p)
 	if (!p)
 		return;
 	if (p->appAfc && pAFCConnectionClose) {
-		pAFCConnectionClose(p->appAfc);
+		__try { pAFCConnectionClose(p->appAfc); } __except(EXCEPTION_EXECUTE_HANDLER) {}
 		p->appAfc=NULL;
 	}
 	p->appSock=0;
 	p->appBundle[0]=0;
 	p->appRoot[0]=0;
+}
+
+static void ClosePanicAfc(ApplePhone* p)
+{
+	if (!p)
+		return;
+	if (p->panicAfc && pAFCConnectionClose) {
+		__try { pAFCConnectionClose(p->panicAfc); } __except(EXCEPTION_EXECUTE_HANDLER) {}
+		p->panicAfc=NULL;
+	}
+	p->panicSock=0;
 }
 
 static BOOL EnsureLockdown(ApplePhone* p)
@@ -496,6 +512,7 @@ static void ClosePhone(ApplePhone* p)
 	if (!p)
 		return;
 	CloseAppAfc(p);
+	ClosePanicAfc(p);
 	if (p->afc && pAFCConnectionClose) {
 		pAFCConnectionClose(p->afc);
 		p->afc=NULL;
@@ -1081,6 +1098,12 @@ static int ParseAppleRel(LPCWSTR rel, WCHAR* appOut, int appcch, char* afcOut, i
 		ToUtf8Slash(s2+1, afcOut, afccch);
 		return AR_APP_REL;
 	}
+	if (_wcsicmp(first, APPLE_PANICS)==0) {
+		if (!slash || !slash[1])
+			return AR_PANICS;
+		ToUtf8Slash(slash+1, afcOut, afccch);
+		return AR_PANICS_REL;
+	}
 	ToUtf8Slash(p, afcOut, afccch);
 	char tmp[1024];
 	strcpy_s(tmp, afcOut);
@@ -1487,7 +1510,7 @@ static BOOL OpenAfcDir(afc_connection conn, const char* path, afc_directory* dir
 		return FALSE;
 	if (path && path[0] && strcmp(path, "/")!=0 && strcmp(path, ".")!=0)
 		return SafeAfcDirOpen(conn, path, dir);
-	static const char* tries[]={ "Documents", ".", "/" };
+	static const char* tries[]={ ".", "/", "Panics", "Documents" };
 	for (int i=0;i<(int)(sizeof(tries)/sizeof(tries[0]));i++) {
 		if (SafeAfcDirOpen(conn, tries[i], dir))
 			return TRUE;
@@ -1556,6 +1579,47 @@ static BOOL EnsureAppAfc(ApplePhone* p, LPCWSTR appName)
 	return TRUE;
 }
 
+static void RunCrashReportMover(ApplePhone* p)
+{
+	int sock=0;
+	if (!StartNamedService(p, "com.apple.crashreportmover", &sock) || sock==0)
+		return;
+	char ping[8]={0};
+	DWORD t=4000;
+	setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (char*)&t, sizeof(t));
+	__try {
+		recv(sock, ping, 4, 0);
+	} __except(EXCEPTION_EXECUTE_HANDLER) {}
+}
+
+static BOOL EnsurePanicAfc(ApplePhone* p)
+{
+	if (!p)
+		return FALSE;
+	if (p->panicAfc)
+		return TRUE;
+	if (!EnsureLockdown(p) || !pAFCConnectionOpen)
+		return FALSE;
+	RunCrashReportMover(p);
+	int sock=0;
+	if (!StartNamedService(p, "com.apple.crashreportcopymobile", &sock) || sock==0)
+		return FALSE;
+	afc_connection conn=NULL;
+	BOOL ok=FALSE;
+	__try {
+		if (pAFCConnectionOpen(sock, 0, &conn)==0 && conn)
+			ok=TRUE;
+	} __except(EXCEPTION_EXECUTE_HANDLER) {
+		conn=NULL;
+		ok=FALSE;
+	}
+	if (!ok)
+		return FALSE;
+	p->panicAfc=conn;
+	p->panicSock=sock;
+	return TRUE;
+}
+
 static void JoinAfc(const char* prefix, const char* rel, char* out, int cch)
 {
 	if (!rel || !rel[0] || !strcmp(rel, "/") || !strcmp(rel, ".")) {
@@ -1595,6 +1659,18 @@ static BOOL ResolveAfc(ApplePhone* p, LPCWSTR rel, afc_connection* conn, char* p
 			return FALSE;
 		*conn=p->appAfc;
 		JoinAfc(p->appRoot, relAfc, path, pathcch);
+		return TRUE;
+	}
+	if (kind==AR_PANICS || kind==AR_PANICS_REL) {
+		if (forWrite && kind==AR_PANICS)
+			return FALSE;
+		if (!EnsurePanicAfc(p) || !p->panicAfc)
+			return FALSE;
+		*conn=p->panicAfc;
+		if (kind==AR_PANICS)
+			strcpy_s(path, pathcch, ".");
+		else
+			strcpy_s(path, pathcch, relAfc);
 		return TRUE;
 	}
 	return FALSE;
@@ -1684,6 +1760,12 @@ BOOL AppleMdFindNext(HANDLE h, WIN32_FIND_DATAW* fd)
 		if (f->index==1) {
 			FillDirFd(APPLE_APPS, fd);
 			f->index=2;
+			AppleUnlock();
+			return TRUE;
+		}
+		if (f->index==2) {
+			FillDirFd(APPLE_PANICS, fd);
+			f->index=3;
 			AppleUnlock();
 			return TRUE;
 		}
@@ -1822,7 +1904,7 @@ BOOL AppleMdDelete(LPCWSTR deviceName, LPCWSTR relPath)
 	WCHAR app[128];
 	char afcPath[1024];
 	int kind=ParseAppleRel(relPath, app, 128, afcPath, 1024);
-	if (kind==AR_ROOT || kind==AR_PHOTOS || kind==AR_APPS || kind==AR_APP)
+	if (kind==AR_ROOT || kind==AR_PHOTOS || kind==AR_APPS || kind==AR_APP || kind==AR_PANICS)
 		return FALSE;
 	AppleLock();
 	ApplePhone* p=FindPhoneByName(deviceName);
@@ -1841,7 +1923,8 @@ BOOL AppleMdMkDir(LPCWSTR deviceName, LPCWSTR relPath)
 	WCHAR app[128];
 	char afcPath[1024];
 	int kind=ParseAppleRel(relPath, app, 128, afcPath, 1024);
-	if (kind==AR_ROOT || kind==AR_PHOTOS || kind==AR_APPS || kind==AR_APP)
+	if (kind==AR_ROOT || kind==AR_PHOTOS || kind==AR_APPS || kind==AR_APP ||
+		kind==AR_PANICS || kind==AR_PANICS_REL)
 		return FALSE;
 	if (!pAFCDirectoryCreate)
 		return FALSE;
@@ -1862,7 +1945,8 @@ int AppleMdPutFile(LPCWSTR deviceName, LPCWSTR relPath, LPCWSTR localPath, BOOL 
 	WCHAR app[128];
 	char afcPath[1024];
 	int kind=ParseAppleRel(relPath, app, 128, afcPath, 1024);
-	if (kind==AR_ROOT || kind==AR_PHOTOS || kind==AR_APPS || kind==AR_APP)
+	if (kind==AR_ROOT || kind==AR_PHOTOS || kind==AR_APPS || kind==AR_APP ||
+		kind==AR_PANICS || kind==AR_PANICS_REL)
 		return FS_FILE_NOTSUPPORTED;
 	if (!pAFCFileRefWrite)
 		return FS_FILE_NOTSUPPORTED;

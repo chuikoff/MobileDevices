@@ -1,4 +1,4 @@
-MTP Devices plugin v2.2.4
+MTP Devices plugin v2.2.5
 =======================
 Modified from Windows Media Audio 2 (wpdplug) by Christian Ghisler.
 
@@ -38,6 +38,8 @@ read; new settings are stored under [MTPDevices].
 
 History
 =======
+20260820 Release v2.2.5
+20260820 Added: iPhone Panic Logs folder (crashreportcopymobile)
 20260820 Release v2.2.4
 20260820 Fixed: opening an iPhone app folder could crash Total Commander
 20260820 Release v2.2.3
