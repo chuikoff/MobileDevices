@@ -287,32 +287,32 @@ BOOL QueryDeviceInfo(LPCWSTR remoteName, PluginDeviceInfo* info)
 				sk->Add(WPD_STORAGE_DESCRIPTION);
 				sk->Add(WPD_STORAGE_FREE_SPACE_IN_BYTES);
 				sk->Add(WPD_STORAGE_CAPACITY);
-				for (DWORD i=0;i<fetched && info->nstor<DEVICE_INFO_MAX_STOR;i++) {
-					IPortableDeviceValues* sv=NULL;
-					if (FAILED(props->GetValues(ids[i], sk, &sv)) || !sv) {
-						CoTaskMemFree(ids[i]);
-						continue;
+				for (DWORD i=0;i<fetched;i++) {
+					if (info->nstor<DEVICE_INFO_MAX_STOR) {
+						IPortableDeviceValues* sv=NULL;
+						if (SUCCEEDED(props->GetValues(ids[i], sk, &sv)) && sv) {
+							GUID cat=GUID_NULL;
+							sv->GetGuidValue(WPD_FUNCTIONAL_OBJECT_CATEGORY, &cat);
+							ULONGLONG cap=0, freeb=0;
+							sv->GetUnsignedLargeIntegerValue(WPD_STORAGE_CAPACITY, &cap);
+							sv->GetUnsignedLargeIntegerValue(WPD_STORAGE_FREE_SPACE_IN_BYTES, &freeb);
+							BOOL isStor=IsEqualGUID(cat, WPD_FUNCTIONAL_CATEGORY_STORAGE) || cap>0 || freeb>0;
+							if (isStor) {
+								int n=info->nstor;
+								CopyWpdString(sv, WPD_STORAGE_DESCRIPTION, info->stor[n].name, 80);
+								if (!info->stor[n].name[0])
+									CopyWpdString(sv, WPD_OBJECT_ORIGINAL_FILE_NAME, info->stor[n].name, 80);
+								if (!info->stor[n].name[0])
+									CopyWpdString(sv, WPD_OBJECT_NAME, info->stor[n].name, 80);
+								if (!info->stor[n].name[0])
+									wcslcpy(info->stor[n].name, L"Storage", 80);
+								info->stor[n].capacityBytes=cap;
+								info->stor[n].freeBytes=freeb;
+								info->nstor++;
+							}
+							sv->Release();
+						}
 					}
-					GUID cat=GUID_NULL;
-					sv->GetGuidValue(WPD_FUNCTIONAL_OBJECT_CATEGORY, &cat);
-					ULONGLONG cap=0, freeb=0;
-					sv->GetUnsignedLargeIntegerValue(WPD_STORAGE_CAPACITY, &cap);
-					sv->GetUnsignedLargeIntegerValue(WPD_STORAGE_FREE_SPACE_IN_BYTES, &freeb);
-					BOOL isStor=IsEqualGUID(cat, WPD_FUNCTIONAL_CATEGORY_STORAGE) || cap>0 || freeb>0;
-					if (isStor) {
-						int n=info->nstor;
-						CopyWpdString(sv, WPD_STORAGE_DESCRIPTION, info->stor[n].name, 80);
-						if (!info->stor[n].name[0])
-							CopyWpdString(sv, WPD_OBJECT_ORIGINAL_FILE_NAME, info->stor[n].name, 80);
-						if (!info->stor[n].name[0])
-							CopyWpdString(sv, WPD_OBJECT_NAME, info->stor[n].name, 80);
-						if (!info->stor[n].name[0])
-							wcslcpy(info->stor[n].name, L"Storage", 80);
-						info->stor[n].capacityBytes=cap;
-						info->stor[n].freeBytes=freeb;
-						info->nstor++;
-					}
-					sv->Release();
 					CoTaskMemFree(ids[i]);
 				}
 				sk->Release();

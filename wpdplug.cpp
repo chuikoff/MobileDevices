@@ -2488,18 +2488,18 @@ int __stdcall FsGetFileW(WCHAR* RemoteName,WCHAR* LocalName,int CopyFlags,Remote
 	if (ri)
 		totalsize=MakeU64(ri->SizeLow, ri->SizeHigh);
 	int result=FS_FILE_READERROR;
-	if (SUCCEEDED(hr)) {
-		IPortableDeviceResources *pResources=NULL;
-		IStream *pStream=NULL;
+	IPortableDeviceResources *pResources=NULL;
+	IStream *pStream=NULL;
+	if (SUCCEEDED(hr) && pDeviceContent) {
 		hr=pDeviceContent->Transfer(&pResources);
 		DWORD OptimalBufferSize=32768;
-		if (SUCCEEDED(hr))
+		if (SUCCEEDED(hr) && pResources)
 			hr= pResources->GetStream(pItemStorageID,
 				WPD_RESOURCE_DEFAULT,
 				STGM_READ,
 				&OptimalBufferSize,
 				&pStream);
-		if SUCCEEDED(hr) {
+		if (SUCCEEDED(hr) && pStream) {
 			if (OptimalBufferSize<1024)
 				OptimalBufferSize=1024;
 			char* buf=(char*)malloc(OptimalBufferSize);
@@ -2549,11 +2549,11 @@ int __stdcall FsGetFileW(WCHAR* RemoteName,WCHAR* LocalName,int CopyFlags,Remote
 				free(buf);
 			}
 		}
-		if (pStream)
-			pStream->Release();
-		if (pResources)
-			pResources->Release();
 	}
+	if (pStream)
+		pStream->Release();
+	if (pResources)
+		pResources->Release();
 	if (pItemStorageID)
 		CoTaskMemFree(pItemStorageID);
 	if (pDeviceContent)
@@ -2851,7 +2851,7 @@ int __stdcall FsPutFileW(WCHAR* LocalName,WCHAR* RemoteName,int CopyFlags)
 							// Now copy the actual data
 							DWORD OptimalBufferSize=32768;
 							hr = pDeviceContent->CreateObjectWithPropertiesAndData(pValues,&pStream,&OptimalBufferSize,NULL);
-							if SUCCEEDED(hr) {
+							if (SUCCEEDED(hr) && pStream) {
 								RemoveFullPathFromCache(RemoteName);
 								if (OptimalBufferSize<1024)
 									OptimalBufferSize=1024;
@@ -2898,9 +2898,10 @@ int __stdcall FsPutFileW(WCHAR* LocalName,WCHAR* RemoteName,int CopyFlags)
 								UINT PreviewImageHeight=0;
 								IPortableDeviceKeyCollection* pKeys=NULL;
 								IPortableDeviceResources* pResources=NULL;
-								if (result!=FS_FILE_OK || !pPreviewImage || !GdiPlusInitialize())
+								if (result!=FS_FILE_OK || !pPreviewImage || !GdiPlusInitialize()) {
 									pStream->Release();
-								else {
+									pStream=NULL;
+								} else {
 									HRESULT hr2=S_OK;
 									CONST GUID* imgtype=NULL;
 									if (_wcsicmp(pPreviewImage->mime,L"image/jpeg")==0) {
@@ -2920,6 +2921,7 @@ int __stdcall FsPutFileW(WCHAR* LocalName,WCHAR* RemoteName,int CopyFlags)
 									else
 										err=1;
 									pStream->Release();
+									pStream=NULL;
 									if (SUCCEEDED(hr2)) {
 										hr2=pResultingStream->GetObjectID(&NewId);
 										pResultingStream->Release();
@@ -2967,11 +2969,11 @@ int __stdcall FsPutFileW(WCHAR* LocalName,WCHAR* RemoteName,int CopyFlags)
 									if (preview) {
 										HANDLE DataHandle=GlobalAlloc(GMEM_MOVEABLE,pPreviewImage->len);
 										if (DataHandle) {
-											IStream* fDataStream;
+											IStream* fDataStream=NULL;
 											char* p=(char*)GlobalLock(DataHandle);
 											memcpy(p,pPreviewImage->data,pPreviewImage->len);
 											GlobalUnlock(DataHandle);
-											if (SUCCEEDED(CreateStreamOnHGlobal(DataHandle,true,&fDataStream))) {  // now fStream = data
+											if (SUCCEEDED(CreateStreamOnHGlobal(DataHandle,TRUE,&fDataStream)) && fDataStream) {
 												Gdiplus::GpImage* GdiplusImage;
 												int err=Gdiplus::DllExports::GdipLoadImageFromStream(fDataStream,&GdiplusImage);
 												if (err==0) {
@@ -2981,9 +2983,9 @@ int __stdcall FsPutFileW(WCHAR* LocalName,WCHAR* RemoteName,int CopyFlags)
 														PreviewImageHeight=0;
 													 Gdiplus::DllExports::GdipDisposeImage(GdiplusImage);
 												}
-											}
-											fDataStream->Release();
-											GlobalFree(DataHandle);
+												fDataStream->Release();
+											} else
+												GlobalFree(DataHandle);
 										}
 									} else if (err==0)
 										err=6;
@@ -3059,6 +3061,12 @@ int __stdcall FsPutFileW(WCHAR* LocalName,WCHAR* RemoteName,int CopyFlags)
 									pKeys->Release();
 								if (pResources)
 									pResources->Release();
+								if (NewId)
+									CoTaskMemFree(NewId);
+								if (pStream) {
+									pStream->Release();
+									pStream=NULL;
+								}
 
 /* Doesn't work, returns access denied
 								// set date again after copying!
@@ -3094,8 +3102,13 @@ int __stdcall FsPutFileW(WCHAR* LocalName,WCHAR* RemoteName,int CopyFlags)
 										pProperties2->Release();
 								}
 */
-							} else
+							} else {
+								if (pStream) {
+									pStream->Release();
+									pStream=NULL;
+								}
 								result=FS_FILE_WRITEERROR;
+							}
 							CloseHandle(f);
 							PropVariantClear(&pv);
 							if (pPreviewImage)

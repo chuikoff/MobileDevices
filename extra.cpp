@@ -106,26 +106,31 @@ static HRESULT GetValuesForPath(WCHAR* path, IPortableDeviceValues** ppValues)
 	IPortableDeviceKeyCollection* keys=NULL;
 	hr=CoCreateInstance(CLSID_PortableDeviceKeyCollection,NULL,CLSCTX_INPROC_SERVER,
 		IID_IPortableDeviceKeyCollection,(VOID**)&keys);
-	if (SUCCEEDED(hr)) {
-		keys->Add(WPD_OBJECT_CONTENT_TYPE);
-		keys->Add(WPD_MEDIA_TITLE);
-		keys->Add(WPD_MEDIA_ARTIST);
-		keys->Add(WPD_MUSIC_ALBUM);
-		keys->Add(WPD_MEDIA_DURATION);
-		keys->Add(WPD_MEDIA_TOTAL_BITRATE);
-		keys->Add(WPD_AUDIO_BITRATE);
-		keys->Add(WPD_MEDIA_WIDTH);
-		keys->Add(WPD_MEDIA_HEIGHT);
-		keys->Add(WPD_STORAGE_FREE_SPACE_IN_BYTES);
-		keys->Add(WPD_STORAGE_CAPACITY);
-		keys->Add(WPD_DEVICE_SERIAL_NUMBER);
-		keys->Add(WPD_DEVICE_POWER_LEVEL);
-		hr=props->GetValues(id,keys,ppValues);
-		keys->Release();
+	if (FAILED(hr) || !keys)
+		goto done;
+	keys->Add(WPD_OBJECT_CONTENT_TYPE);
+	keys->Add(WPD_MEDIA_TITLE);
+	keys->Add(WPD_MEDIA_ARTIST);
+	keys->Add(WPD_MUSIC_ALBUM);
+	keys->Add(WPD_MEDIA_DURATION);
+	keys->Add(WPD_MEDIA_TOTAL_BITRATE);
+	keys->Add(WPD_AUDIO_BITRATE);
+	keys->Add(WPD_MEDIA_WIDTH);
+	keys->Add(WPD_MEDIA_HEIGHT);
+	keys->Add(WPD_STORAGE_FREE_SPACE_IN_BYTES);
+	keys->Add(WPD_STORAGE_CAPACITY);
+	keys->Add(WPD_DEVICE_SERIAL_NUMBER);
+	keys->Add(WPD_DEVICE_POWER_LEVEL);
+	hr=props->GetValues(id,keys,ppValues);
+	if (FAILED(hr) && ppValues && *ppValues) {
+		(*ppValues)->Release();
+		*ppValues=NULL;
 	}
-	props->Release();
+done:
+	if (keys) keys->Release();
+	if (props) props->Release();
 	if (content) content->Release();
-	CoTaskMemFree(id);
+	if (id) CoTaskMemFree(id);
 	UnlockPlugin();
 	return hr;
 }
