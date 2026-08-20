@@ -3,6 +3,7 @@
 
 #include <PortableDeviceApi.h>
 #include <PortableDevice.h>
+#include <new>
 #include <stdio.h>
 #include <wchar.h>
 #include <Dbt.h>
@@ -1481,7 +1482,12 @@ static void PrefetchBatchValues(pLastFindStuct lf)
 		pv.vt=VT_EMPTY;
 		pv.pwszVal=NULL;
 	}
-	CBulkCb* cb=new CBulkCb(lf);
+	CBulkCb* cb=new (std::nothrow) CBulkCb(lf);
+	if (!cb) {
+		SAFE_RELEASE(ids);
+		SAFE_RELEASE(bulk);
+		return;
+	}
 	GUID ctx=GUID_NULL;
 	HRESULT hr=bulk->QueueGetValuesByObjectList(ids,lf->pPropertiesToRead,cb,&ctx);
 	if (SUCCEEDED(hr))
