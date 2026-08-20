@@ -10,11 +10,11 @@
 #define WPDPLUG_API __declspec(dllimport)
 #endif
 
-#define PLUGIN_VERSION_MAJOR 2
-#define PLUGIN_VERSION_MINOR 3
-#define PLUGIN_VERSION_REV   3
-#define PLUGIN_VERSION_STR   "2.3.3"
-#define PLUGIN_VERSION_COMMA 2,3,3,0
+#define PLUGIN_VERSION_MAJOR 0
+#define PLUGIN_VERSION_MINOR 9
+#define PLUGIN_VERSION_REV   0
+#define PLUGIN_VERSION_STR   "0.9"
+#define PLUGIN_VERSION_COMMA 0,9,0,0
 
 #define PLUGIN_DISPLAY_NAME     "MTP Devices"
 #define PLUGIN_DISPLAY_NAME_W   L"MTP Devices"

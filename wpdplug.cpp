@@ -620,6 +620,8 @@ BOOL FindNameInCache(LPWSTR deviceName,LPWSTR pdir,LPWSTR* returnedObjectId,LPWS
 	return false;
 }
 
+static void PickObjectDisplayName(IPortableDeviceValues* v, WCHAR* out, DWORD cch);
+
 HRESULT GetFolderIDFromPathName(LPWSTR pPath,IEnumPortableDeviceObjectIDs** pEnumObjectIDsRetVal,
 	IPortableDeviceProperties** pPropertiesRetVal,IPortableDeviceContent** pDeviceContent,LPWSTR* pStorageIDRetVal)
 {
@@ -714,6 +716,8 @@ HRESULT GetFolderIDFromPathName(LPWSTR pPath,IEnumPortableDeviceObjectIDs** pEnu
 	if (SUCCEEDED(hr)) {
 		pPropertiesToRead->Add(WPD_OBJECT_NAME);
 		pPropertiesToRead->Add(WPD_OBJECT_ORIGINAL_FILE_NAME);
+		pPropertiesToRead->Add(WPD_STORAGE_DESCRIPTION);
+		pPropertiesToRead->Add(WPD_FUNCTIONAL_OBJECT_CATEGORY);
 	}
 	LPWSTR LastParentName=wstrnew(WPD_DEVICE_OBJECT_ID);
 	if (SUCCEEDED(hr))
@@ -752,18 +756,14 @@ HRESULT GetFolderIDFromPathName(LPWSTR pPath,IEnumPortableDeviceObjectIDs** pEnu
 			HRESULT hr2=pProperties->GetValues(szObjectIDArray[i],
                                 pPropertiesToRead,   // The properties we want to read
                                 &pObjectProperties); // Driver supplied property values for the specified object
-			if (SUCCEEDED(hr2)) {
-				PWSTR pEnumName=NULL;
-				pObjectProperties->GetStringValue(WPD_OBJECT_ORIGINAL_FILE_NAME,&pEnumName);
-				if (pEnumName==NULL || pEnumName[0]==0)
-					pObjectProperties->GetStringValue(WPD_OBJECT_NAME,&pEnumName);
-				PWSTR pNameAlloc=pEnumName;
-				if (wcscmp(pEnumName,L"\\")==0)
-					pEnumName=L"_";
+			if (SUCCEEDED(hr2) && pObjectProperties) {
+				WCHAR showname[MAX_PATH];
+				PickObjectDisplayName(pObjectProperties, showname, MAX_PATH);
+				pObjectProperties->Release();
+				pObjectProperties=NULL;
 
-				if (wcscmp(pEnumName,pname)==0) {  //found!!
+				if (wcscmp(showname,pname)==0) {  //found!!
 					AddNameToCache(wcSearch,pdirstart,szObjectIDArray[i],time);
-					CoTaskMemFree(pNameAlloc);
 					pEnumObjectIDs->Release();
 					pEnumObjectIDs=NULL;
 
@@ -796,8 +796,8 @@ HRESULT GetFolderIDFromPathName(LPWSTR pPath,IEnumPortableDeviceObjectIDs** pEnu
 							*pEnumObjectIDsRetVal=pEnumObjectIDs;
 						if (pPropertiesRetVal)
 							*pPropertiesRetVal=pProperties;
-						else
-							pObjectProperties->Release();
+						else if (pProperties)
+							pProperties->Release();
 						if (pDeviceContent)
 							*pDeviceContent=pContent;
 						else
@@ -809,9 +809,6 @@ HRESULT GetFolderIDFromPathName(LPWSTR pPath,IEnumPortableDeviceObjectIDs** pEnu
 						pPropertiesToRead->Release();
 						return S_OK;
 					}
-				} else {
-					CoTaskMemFree(pNameAlloc);
-					pObjectProperties->Release();
 				}
 			}
 			i++;
@@ -900,12 +897,21 @@ static BOOL IsGenericWpdName(LPCWSTR name)
 		L"Android Phone", L"Android Device", L"Android Composite",
 		L"USB Composite", L"Composite Device",
 		L"Unknown Device", L"Generic Device",
-		L"ADB Interface", L"ADB Composite"
+		L"ADB Interface", L"ADB Composite",
+		L"MTP-устройств", L"MTP устройств", L"устройство MTP", L"устройств MTP",
+		L"стандартное MTP", L"USB-устройств", L"USB устройств",
+		L"портативное устройств"
 	};
 	for (int i=0;i<(int)(sizeof(gen)/sizeof(gen[0]));i++) {
 		if (NameContainsI(s, gen[i]))
 			return TRUE;
 	}
+	if (NameContainsI(s, L"MTP") &&
+		(NameContainsI(s, L"USB") || NameContainsI(s, L"Device") ||
+		 NameContainsI(s, L"устройств") || NameContainsI(s, L"стандарт")))
+		return TRUE;
+	if (NameContainsI(s, L"USB") && NameContainsI(s, L"устройств"))
+		return TRUE;
 	return FALSE;
 }
 
@@ -1037,6 +1043,41 @@ static BOOL QueryOpenedDeviceIdentity(IPortableDevice* dev, WCHAR* model, DWORD 
 		CopyWpdPropString(v, WPD_DEVICE_FRIENDLY_NAME, friendly, fcch);
 	v->Release();
 	return (model && model[0]) || (mfr && mfr[0]) || (friendly && friendly[0]);
+}
+
+static void PickObjectDisplayName(IPortableDeviceValues* v, WCHAR* out, DWORD cch)
+{
+	if (!out || cch<2)
+		return;
+	out[0]=0;
+	if (!v) {
+		wcslcpy(out, L"_", cch);
+		return;
+	}
+	WCHAR orig[MAX_PATH]=L"", name[MAX_PATH]=L"", stor[MAX_PATH]=L"";
+	CopyWpdPropString(v, WPD_OBJECT_ORIGINAL_FILE_NAME, orig, MAX_PATH);
+	CopyWpdPropString(v, WPD_OBJECT_NAME, name, MAX_PATH);
+	CopyWpdPropString(v, WPD_STORAGE_DESCRIPTION, stor, MAX_PATH);
+	GUID cat=GUID_NULL;
+	v->GetGuidValue(WPD_FUNCTIONAL_OBJECT_CATEGORY, &cat);
+	BOOL isStor=IsEqualGUID(cat, WPD_FUNCTIONAL_CATEGORY_STORAGE);
+	LPCWSTR pick=NULL;
+	if (stor[0] && (isStor || IsGenericWpdName(orig) || IsGenericWpdName(name) || !orig[0]))
+		pick=stor;
+	else if (orig[0] && !IsGenericWpdName(orig))
+		pick=orig;
+	else if (name[0] && !IsGenericWpdName(name))
+		pick=name;
+	else if (stor[0])
+		pick=stor;
+	else if (orig[0])
+		pick=orig;
+	else if (name[0])
+		pick=name;
+	if (pick && pick[0] && wcscmp(pick, L"\\")!=0)
+		wcslcpy(out, pick, cch);
+	else
+		wcslcpy(out, L"_", cch);
 }
 
 static void PickWpdDisplayName(IPortableDeviceManager* mgr, LPCWSTR pnpId, DWORD index, WCHAR* out, DWORD cch)
@@ -1478,15 +1519,7 @@ void PopulateFindDataW(PWSTR szObject,pLastFindStuct lf,WIN32_FIND_DATAW *FindDa
 							&pObjectProperties);
 			}
 			if (SUCCEEDED(hr2) && pObjectProperties) {
-				PWSTR pName=NULL;
-				pObjectProperties->GetStringValue(WPD_OBJECT_ORIGINAL_FILE_NAME,&pName);
-				if (pName==NULL || pName[0]==0)
-					pObjectProperties->GetStringValue(WPD_OBJECT_NAME,&pName);
-				if (pName==NULL || pName[0]==0 || wcscmp(pName,L"\\")==0)
-					wcslcpy(FindData->cFileName,L"_",MAX_PATH-2);
-				else
-					wcslcpy(FindData->cFileName,pName,MAX_PATH-2);
-				CoTaskMemFree(pName);
+				PickObjectDisplayName(pObjectProperties, FindData->cFileName, MAX_PATH-2);
 
 				if (!IsWpdFolderObject(pObjectProperties)) {
 					FindData->dwFileAttributes=0;
@@ -1696,6 +1729,8 @@ HANDLE __stdcall FsFindFirstW(WCHAR* Path,WIN32_FIND_DATAW *FindData)
 				IPortableDeviceValues* pObjectProperties=NULL;
 				lf->pPropertiesToRead->Add(WPD_OBJECT_NAME);
 				lf->pPropertiesToRead->Add(WPD_OBJECT_ORIGINAL_FILE_NAME);
+				lf->pPropertiesToRead->Add(WPD_STORAGE_DESCRIPTION);
+				lf->pPropertiesToRead->Add(WPD_FUNCTIONAL_OBJECT_CATEGORY);
 				lf->pPropertiesToRead->Add(WPD_OBJECT_SIZE);
 				lf->pPropertiesToRead->Add(WPD_OBJECT_DATE_MODIFIED);
 				lf->pPropertiesToRead->Add(WPD_OBJECT_DATE_CREATED);  // for devices like some cameras which don't have the modified date
@@ -1933,6 +1968,8 @@ int NameExistsInEnum(IEnumPortableDeviceObjectIDs* pEnumObjectIDs,PWSTR pSearchN
 	if (SUCCEEDED(hr)) {
 		pPropertiesToRead->Add(WPD_OBJECT_NAME);
 		pPropertiesToRead->Add(WPD_OBJECT_ORIGINAL_FILE_NAME);
+		pPropertiesToRead->Add(WPD_STORAGE_DESCRIPTION);
+		pPropertiesToRead->Add(WPD_FUNCTIONAL_OBJECT_CATEGORY);
 		pPropertiesToRead->Add(WPD_OBJECT_CONTENT_TYPE);
 	} else
 		return 0;
@@ -1948,24 +1985,19 @@ int NameExistsInEnum(IEnumPortableDeviceObjectIDs* pEnumObjectIDs,PWSTR pSearchN
 				HRESULT hr2=pProperties->GetValues(szObjectIDArray[i],
 						pPropertiesToRead,   // The properties we want to read
 						&pObjectProperties); // Driver supplied property values for the specified object
-				if (SUCCEEDED(hr2)) {
-					PWSTR pName=NULL;
-					pObjectProperties->GetStringValue(WPD_OBJECT_ORIGINAL_FILE_NAME,&pName);
-					if (pName==NULL || pName[0]==0)
-						pObjectProperties->GetStringValue(WPD_OBJECT_NAME,&pName);
-					if (pName && wcscmp(pName,pSearchName)==0)
+				if (SUCCEEDED(hr2) && pObjectProperties) {
+					WCHAR showname[MAX_PATH];
+					PickObjectDisplayName(pObjectProperties, showname, MAX_PATH);
+					if (showname[0] && wcscmp(showname,pSearchName)==0)
 						match=IsWpdFolderObject(pObjectProperties) ? 2 : 1;
 					pObjectProperties->Release();
 					if (match) {
-						if (pName)
-							CoTaskMemFree(pName);
 						if (pReturnedObjectId) {
 							*pReturnedObjectId=szObjectIDArray[i];
 							szObjectIDArray[i]=NULL;  // do not delete it!
 						}
 						break;
-					} else if (pName)
-						CoTaskMemFree(pName);
+					}
 				}
 			}
 			for (DWORD i=0;i<cFetched;i++)

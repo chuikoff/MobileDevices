@@ -1,15 +1,13 @@
 # MTP Devices
 
-Total Commander file system plugin (WFX) for phones, media players and cameras over **MTP / Windows Portable Devices**.
+Total Commander file system plugin (WFX) for **Android (MTP)** and **iPhone/iPad** (Apple Devices from the Microsoft Store).
 
 This is a modified version of Christian Ghisler’s *Windows Media Audio 2* (`wpdplug`) plugin. It is **not** the original MediaAudio2.
 
 - Shows up in Network Neighborhood as **MTP Devices**
 - Files: `mtpdevices.wfx` (32-bit) and `mtpdevices.wfx64` (64-bit)
-- Version 2.2: iPhone Photos + Applications (app files), Android/iPhone icons
-- Version 2.1: Android + iPhone (Apple Devices from Microsoft Store, photos via AFC)
-- Version 2.0: bulk listing, Property Store metadata, eject/refresh/info, device filter, MTP events
-- Version 1.5: background copy, custom columns, thumbnails, cancel
+- Browse, copy, delete, rename, folders; device info (model, battery, storage)
+- iPhone: Photos, Applications (File Sharing), Panic Logs
 - License: [BSD-3-Clause](LICENSE.txt)
 
 ## Install
@@ -18,7 +16,7 @@ This is a modified version of Christian Ghisler’s *Windows Media Audio 2* (`wp
 2. Open the archive in Total Commander (or double-click it from TC).
 3. Confirm plugin installation.
 
-Requires Windows Vista or later with WPD support.
+Requires Windows Vista or later with WPD support. iPhone needs Apple Devices (Microsoft Store) and 64-bit Total Commander.
 
 ## Build
 
