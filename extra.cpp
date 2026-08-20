@@ -46,7 +46,7 @@ void __stdcall FsStatusInfo(char* RemoteDir,int InfoStartEnd,int InfoOperation)
 void __stdcall FsStatusInfoW(WCHAR* RemoteDir,int InfoStartEnd,int InfoOperation)
 {
 	UNREFERENCED_PARAMETER(RemoteDir);
-	EnsureComApartment();
+	ComApartmentGuard comApt;
 	if (InfoStartEnd==FS_STATUS_START) {
 		ResetAbort();
 		SetContentStop(FALSE);
@@ -86,7 +86,9 @@ static HRESULT GetValuesForPath(WCHAR* path, IPortableDeviceValues** ppValues)
 	*ppValues=NULL;
 	if (!path || path[0]!='\\')
 		return E_INVALIDARG;
-	EnsureComApartment();
+	ComApartmentGuard comApt;
+	if (!comApt.ok())
+		return E_FAIL;
 	if (!InitFunctionsIfNeeded(TRUE))
 		return E_FAIL;
 	LockPlugin();
@@ -422,7 +424,9 @@ int __stdcall FsGetPreviewBitmapW(WCHAR* RemoteName,int width,int height,HBITMAP
 	if (!ReturnedBitmap || !RemoteName || RemoteName[0]!='\\')
 		return FS_BITMAP_NONE;
 	*ReturnedBitmap=NULL;
-	EnsureComApartment();
+	ComApartmentGuard comApt;
+	if (!comApt.ok())
+		return FS_BITMAP_NONE;
 	if (!InitFunctionsIfNeeded(TRUE))
 		return FS_BITMAP_NONE;
 

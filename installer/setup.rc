@@ -1,0 +1,6 @@
+#include "resource.h"
+IDR_WFX     RCDATA  "..\\Plugin\\mobiledevices.wfx"
+IDR_WFX64   RCDATA  "..\\Plugin\\mobiledevices.wfx64"
+IDR_LIC     RCDATA  "..\\LICENSE.txt"
+IDR_README  RCDATA  "..\\ReadMe.txt"
+1 ICON "..\\ICONROOT.ICO"

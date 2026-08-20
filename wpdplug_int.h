@@ -16,6 +16,18 @@ HRESULT GetFolderIDFromPathName(LPWSTR pPath, IEnumPortableDeviceObjectIDs** pEn
 void LockPlugin(void);
 void UnlockPlugin(void);
 BOOL EnsureComApartment(void);
+void UninitComApartment(void);
+
+class ComApartmentGuard {
+	BOOL m_ok;
+public:
+	ComApartmentGuard();
+	~ComApartmentGuard();
+	BOOL ok() const { return m_ok; }
+private:
+	ComApartmentGuard(const ComApartmentGuard&);
+	ComApartmentGuard& operator=(const ComApartmentGuard&);
+};
 void RequestAbort(void);
 void ResetAbort(void);
 void SetCancelDevice(IPortableDevice* pDevice);

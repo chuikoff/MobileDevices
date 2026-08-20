@@ -227,10 +227,43 @@ static void WaitDeviceTransfersIdle(void)
 	}
 }
 
+static __declspec(thread) int t_comDepth=0;
+static __declspec(thread) BOOL t_comInitedByUs=FALSE;
+static __declspec(thread) BOOL t_comOwnedByPlugin=FALSE;
+
 BOOL EnsureComApartment(void)
 {
 	HRESULT hr=CoInitialize(NULL);
-	return (hr==S_OK || hr==S_FALSE);
+	if (hr==S_OK) {
+		t_comInitedByUs=TRUE;
+		t_comDepth++;
+		return TRUE;
+	}
+	if (hr==S_FALSE) {
+		t_comDepth++;
+		return TRUE;
+	}
+	return FALSE;
+}
+
+void UninitComApartment(void)
+{
+	if (t_comDepth>0)
+		t_comDepth--;
+	if (t_comDepth==0 && t_comInitedByUs && !t_comOwnedByPlugin) {
+		CoUninitialize();
+		t_comInitedByUs=FALSE;
+	}
+}
+
+ComApartmentGuard::ComApartmentGuard()
+{
+	m_ok=EnsureComApartment();
+}
+
+ComApartmentGuard::~ComApartmentGuard()
+{
+	UninitComApartment();
 }
 
 void SetCancelDevice(IPortableDevice* pDevice)
@@ -450,8 +483,15 @@ BOOL InitFunctionsIfNeeded(BOOL trueconnect)
 	if (!firstinitialized) {
 		HRESULT cohr=CoInitialize(NULL);
 		firstinitialized=true;
-		if (cohr==S_OK)
+		if (cohr==S_OK) {
 			weInitializedCOM=TRUE;
+			t_comOwnedByPlugin=TRUE;
+			t_comInitedByUs=TRUE;
+			t_comDepth++;
+		} else if (cohr==S_FALSE) {
+			weInitializedCOM=TRUE;
+			t_comOwnedByPlugin=TRUE;
+		}
 	}
 	if (!initialized) {
 		initialized=true;
@@ -1670,7 +1710,11 @@ HANDLE __stdcall FsFindFirstW(WCHAR* Path,WIN32_FIND_DATAW *FindData)
 	pLastFindStuct lf;
 	WCHAR wcSearch[wdirtypemax];
 
-	EnsureComApartment();
+	ComApartmentGuard comApt;
+	if (!comApt.ok()) {
+		SetLastError(ERROR_GEN_FAILURE);
+		return INVALID_HANDLE_VALUE;
+	}
 	memset(FindData,0,sizeof(WIN32_FIND_DATAW));
 	wcslcpy(wcSearch,Path,wdirtypemax-1);           // incl. Backslash!
 	wcslcatbackslash(wcSearch,wdirtypemax-1);
@@ -2473,10 +2517,12 @@ int __stdcall FsGetFileW(WCHAR* RemoteName,WCHAR* LocalName,int CopyFlags,Remote
 	if (err)
 		return FS_FILE_USERABORT;
 
+	ComApartmentGuard comApt;
+	if (!comApt.ok())
+		return FS_FILE_READERROR;
 	if (!InitFunctionsIfNeeded(TRUE))
 		return FS_FILE_READERROR;
 
-	EnsureComApartment();
 	WCHAR WLocalName[wdirtypemax];
 	WCHAR WRemoteName[wdirtypemax];
 	wcslcpy(WLocalName,LocalName,wdirtypemax-1);
@@ -2719,10 +2765,12 @@ int __stdcall FsPutFileW(WCHAR* LocalName,WCHAR* RemoteName,int CopyFlags)
 	if (err)
 		return FS_FILE_USERABORT;
 	
+	ComApartmentGuard comApt;
+	if (!comApt.ok())
+		return FS_FILE_READERROR;
 	if (!InitFunctionsIfNeeded(TRUE))
 		return FS_FILE_READERROR;
 
-	EnsureComApartment();
 	WCHAR WLocalName[wdirtypemax],*p;
 	WCHAR WRemoteName[wdirtypemax];
 	wcslcpy(WLocalName,LocalName,wdirtypemax);
@@ -3230,6 +3278,9 @@ void __stdcall FsContentPluginUnloading(void)
 	if (weInitializedCOM) {
 		CoUninitialize();
 		weInitializedCOM=FALSE;
+		t_comOwnedByPlugin=FALSE;
+		t_comInitedByUs=FALSE;
+		t_comDepth=0;
 	}
 	firstinitialized=FALSE;
 }

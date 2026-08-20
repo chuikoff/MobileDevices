@@ -220,7 +220,9 @@ BOOL QueryDeviceInfo(LPCWSTR remoteName, PluginDeviceInfo* info)
 			return AppleMdFillInfo(dev, info);
 	}
 
-	EnsureComApartment();
+	ComApartmentGuard comApt;
+	if (!comApt.ok())
+		return FALSE;
 	if (!InitFunctionsIfNeeded(TRUE))
 		return FALSE;
 
