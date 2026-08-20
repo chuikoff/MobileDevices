@@ -11,10 +11,10 @@
 #endif
 
 #define PLUGIN_VERSION_MAJOR 0
-#define PLUGIN_VERSION_MINOR 91
-#define PLUGIN_VERSION_REV   0
-#define PLUGIN_VERSION_STR   "0.91"
-#define PLUGIN_VERSION_COMMA 0,91,0,0
+#define PLUGIN_VERSION_MINOR 9
+#define PLUGIN_VERSION_REV   1
+#define PLUGIN_VERSION_STR   "0.9.1"
+#define PLUGIN_VERSION_COMMA 0,9,1,0
 
 #define PLUGIN_DISPLAY_NAME     "Mobile Devices"
 #define PLUGIN_DISPLAY_NAME_W   L"Mobile Devices"

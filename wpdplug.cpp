@@ -248,6 +248,11 @@ static BOOL IsWpdFolderContentType(REFGUID contentType)
 		|| IsEqualGUID(contentType, WPD_CONTENT_TYPE_MIXED_CONTENT_ALBUM);
 }
 
+static ULONGLONG MakeU64(DWORD low, DWORD high)
+{
+	return ((ULONGLONG)high << 32) | (ULONGLONG)low;
+}
+
 static BOOL IsWpdFolderObject(IPortableDeviceValues* pObjectProperties)
 {
 	if (!pObjectProperties)
@@ -2468,7 +2473,7 @@ int __stdcall FsGetFileW(WCHAR* RemoteName,WCHAR* LocalName,int CopyFlags,Remote
 				mt=&ri->LastWriteTime;
 			ULONGLONG sz=0;
 			if (ri)
-				sz=((ULONGLONG)ri->SizeHigh<<32)+ri->SizeLow;
+				sz=MakeU64(ri->SizeLow, ri->SizeHigh);
 			return AppleMdGetFile(dev, rel, WLocalName, sz, mt);
 		}
 	}
@@ -2480,10 +2485,8 @@ int __stdcall FsGetFileW(WCHAR* RemoteName,WCHAR* LocalName,int CopyFlags,Remote
 	SetCancelDevice(FindStoredDeviceByPath(WRemoteName));
 	ULONGLONG totalsize=0;
 	ULONGLONG totalcopied=0;
-	if (ri) {
-		totalsize=ri->SizeHigh;
-		totalsize=(totalsize<<32) + ri->SizeLow;
-	}
+	if (ri)
+		totalsize=MakeU64(ri->SizeLow, ri->SizeHigh);
 	int result=FS_FILE_READERROR;
 	if (SUCCEEDED(hr)) {
 		IPortableDeviceResources *pResources=NULL;
@@ -2759,9 +2762,9 @@ int __stdcall FsPutFileW(WCHAR* LocalName,WCHAR* RemoteName,int CopyFlags)
 					if (SUCCEEDED(hr)) {
 						HANDLE f=CreateFileT(LocalName,GENERIC_READ,FILE_SHARE_READ | FILE_SHARE_WRITE,NULL,OPEN_EXISTING,0,NULL);
 						if (f!=INVALID_HANDLE_VALUE) {
-							DWORD SizeHigh;
-							totalsize=GetFileSize(f,&SizeHigh);
-							totalsize=totalsize | (((ULONGLONG)SizeHigh)<<32);
+							DWORD SizeHigh=0;
+							DWORD SizeLow=GetFileSize(f,&SizeHigh);
+							totalsize=MakeU64(SizeLow, SizeHigh);
 							IStream* pStream=NULL;
 							CONST GUID* pFormat=NULL;
 							CONST GUID* pContent=NULL;
