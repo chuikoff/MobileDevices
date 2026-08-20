@@ -30,43 +30,50 @@ static HRESULT ReadStreamToArt(IStream* stream, AlbumArtBlob** ppArt)
 {
 	if (!stream || !ppArt)
 		return E_POINTER;
+	*ppArt=NULL;
+	const size_t kMaxArt=20u*1024u*1024u;
 	STATSTG st={0};
 	HRESULT hr=stream->Stat(&st, STATFLAG_NONAME);
-	DWORD len=0;
-	if (SUCCEEDED(hr) && st.cbSize.HighPart==0 && st.cbSize.LowPart>0 && st.cbSize.LowPart<20*1024*1024)
-		len=st.cbSize.LowPart;
+	size_t cap=0;
+	if (SUCCEEDED(hr) && st.cbSize.HighPart==0 && st.cbSize.LowPart>0 && st.cbSize.LowPart<=kMaxArt)
+		cap=st.cbSize.LowPart;
 	BYTE* data=NULL;
-	DWORD total=0;
-	if (len) {
-		data=(BYTE*)malloc(len);
+	size_t total=0;
+	LARGE_INTEGER z={0};
+	stream->Seek(z, STREAM_SEEK_SET, NULL);
+	if (cap) {
+		data=(BYTE*)malloc(cap);
 		if (!data)
 			return E_OUTOFMEMORY;
-		ULONG n=0;
-		LARGE_INTEGER z={0};
-		stream->Seek(z, STREAM_SEEK_SET, NULL);
-		while (total<len) {
-			hr=stream->Read(data+total, len-total, &n);
+		while (total<cap) {
+			ULONG n=0;
+			ULONG want=(ULONG)(cap-total);
+			hr=stream->Read(data+total, want, &n);
 			if (FAILED(hr) || n==0)
 				break;
+			if (n>want)
+				n=want;
 			total+=n;
 		}
 	} else {
 		BYTE buf[8192];
-		ULONG n=0;
 		for (;;) {
+			ULONG n=0;
 			hr=stream->Read(buf, sizeof(buf), &n);
 			if (FAILED(hr) || n==0)
 				break;
-			BYTE* nd=(BYTE*)realloc(data, total+n);
+			if ((size_t)n>kMaxArt || total>kMaxArt-(size_t)n) {
+				free(data);
+				return HRESULT_FROM_WIN32(ERROR_FILE_TOO_LARGE);
+			}
+			BYTE* nd=(BYTE*)realloc(data, total+(size_t)n);
 			if (!nd) {
 				free(data);
 				return E_OUTOFMEMORY;
 			}
 			data=nd;
 			memcpy(data+total, buf, n);
-			total+=n;
-			if (total>20*1024*1024)
-				break;
+			total+=(size_t)n;
 		}
 	}
 	if (!data || total<8) {
@@ -79,7 +86,7 @@ static HRESULT ReadStreamToArt(IStream* stream, AlbumArtBlob** ppArt)
 		return E_OUTOFMEMORY;
 	}
 	art->data=data;
-	art->len=total;
+	art->len=(DWORD)total;
 	if (data[0]==0xFF && data[1]==0xD8)
 		wcscpy_s(art->mime, L"image/jpeg");
 	else if (data[0]==0x89 && data[1]=='P')
