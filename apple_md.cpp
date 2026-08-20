@@ -1435,7 +1435,6 @@ static BOOL HouseArrest(ApplePhone* p, const char* bundle, const char* command, 
 	if (!StartNamedService(p, "com.apple.mobile.house_arrest", sock))
 		return FALSE;
 	if (!HouseArrestSend(*sock, command, bundle)) {
-		closesocket(*sock);
 		*sock=0;
 		return FALSE;
 	}
@@ -1445,15 +1444,11 @@ static BOOL HouseArrest(ApplePhone* p, const char* bundle, const char* command, 
 		WCHAR err[80], status[80];
 		DictStr(pl, "Error", err, 80);
 		DictStr(pl, "Status", status, 80);
-		ok=(err[0]==0);
-		if (ok && status[0] && _wcsicmp(status, L"Complete")!=0 && _wcsicmp(status, L"Success")!=0)
-			ok=FALSE;
+		ok=(err[0]==0) && (_wcsicmp(status, L"Complete")==0 || _wcsicmp(status, L"Success")==0);
 		pCFRelease(pl);
 	}
-	if (!ok) {
-		closesocket(*sock);
+	if (!ok)
 		*sock=0;
-	}
 	return ok;
 }
 
@@ -1469,20 +1464,32 @@ static BOOL AfcHasDir(afc_connection conn, const char* name)
 	return TRUE;
 }
 
+static BOOL SafeAfcDirOpen(afc_connection conn, const char* path, afc_directory* dir)
+{
+	*dir=NULL;
+	if (!conn || !pAFCDirectoryOpen || !path || !path[0])
+		return FALSE;
+	BOOL ok=FALSE;
+	__try {
+		if (pAFCDirectoryOpen(conn, path, dir)==0 && *dir)
+			ok=TRUE;
+	} __except(EXCEPTION_EXECUTE_HANDLER) {
+		*dir=NULL;
+		ok=FALSE;
+	}
+	return ok;
+}
+
 static BOOL OpenAfcDir(afc_connection conn, const char* path, afc_directory* dir)
 {
 	*dir=NULL;
-	if (!conn || !pAFCDirectoryOpen)
+	if (!conn)
 		return FALSE;
-	if (path && path[0] && strcmp(path, "/")!=0 && strcmp(path, ".")!=0) {
-		if (pAFCDirectoryOpen(conn, path, dir)==0 && *dir)
-			return TRUE;
-		return FALSE;
-	}
-	const char* tries[]={ ".", "", "/", "Documents", "/Documents" };
+	if (path && path[0] && strcmp(path, "/")!=0 && strcmp(path, ".")!=0)
+		return SafeAfcDirOpen(conn, path, dir);
+	static const char* tries[]={ "Documents", ".", "/" };
 	for (int i=0;i<(int)(sizeof(tries)/sizeof(tries[0]));i++) {
-		*dir=NULL;
-		if (pAFCDirectoryOpen(conn, tries[i], dir)==0 && *dir)
+		if (SafeAfcDirOpen(conn, tries[i], dir))
 			return TRUE;
 	}
 	return FALSE;
@@ -1503,38 +1510,24 @@ static BOOL AppDocumentsOpen(ApplePhone* p, const char* bundle, afc_connection* 
 {
 	*outConn=NULL;
 	*outSock=0;
-	if (!p || !bundle || !bundle[0] || !EnsureLockdown(p))
+	if (!p || !bundle || !bundle[0] || !EnsureLockdown(p) || !pAFCConnectionOpen)
 		return FALSE;
 
 	int sock=0;
-	if (pAMDeviceStartHouseArrestService) {
-		CFStringRef bid=CfStr(bundle);
-		if (bid) {
-			unsigned int what=0;
-			CFMutableDictionaryRef opt=DictNew();
-			if (opt)
-				DictSetCStr(opt, "Command", "VendDocuments");
-			mach_error_t err=pAMDeviceStartHouseArrestService(p->dev, bid, opt, &sock, &what);
-			if (opt)
-				pCFRelease(opt);
-			if (err!=0 || sock==0) {
-				sock=0;
-				what=0;
-				err=pAMDeviceStartHouseArrestService(p->dev, bid, NULL, &sock, &what);
-			}
-			pCFRelease(bid);
-			if (err!=0)
-				sock=0;
-		}
-	}
-	if (sock==0 && !HouseArrest(p, bundle, "VendDocuments", &sock))
+	if (!HouseArrest(p, bundle, "VendDocuments", &sock) || sock==0)
 		return FALSE;
 
 	afc_connection conn=NULL;
-	if (!pAFCConnectionOpen || pAFCConnectionOpen(sock, 0, &conn)!=0 || !conn) {
-		closesocket(sock);
-		return FALSE;
+	BOOL ok=FALSE;
+	__try {
+		if (pAFCConnectionOpen(sock, 0, &conn)==0 && conn)
+			ok=TRUE;
+	} __except(EXCEPTION_EXECUTE_HANDLER) {
+		conn=NULL;
+		ok=FALSE;
 	}
+	if (!ok)
+		return FALSE;
 	*outConn=conn;
 	*outSock=sock;
 	return TRUE;
@@ -1707,13 +1700,20 @@ BOOL AppleMdFindNext(HANDLE h, WIN32_FIND_DATAW* fd)
 		AppleUnlock();
 		return TRUE;
 	}
-	if (!f->conn) {
+	if (!f->conn || !f->dir) {
 		AppleUnlock();
 		return FALSE;
 	}
 	for (;;) {
 		char* name=NULL;
-		if (pAFCDirectoryRead(f->conn, f->dir, &name)!=0 || !name || !name[0]) {
+		BOOL got=FALSE;
+		__try {
+			got=(pAFCDirectoryRead(f->conn, f->dir, &name)==0 && name && name[0]);
+		} __except(EXCEPTION_EXECUTE_HANDLER) {
+			got=FALSE;
+			name=NULL;
+		}
+		if (!got) {
 			AppleUnlock();
 			return FALSE;
 		}
@@ -1731,8 +1731,12 @@ void AppleMdFindClose(HANDLE h)
 	if (!f || f->magic!=APPLE_FIND_MAGIC)
 		return;
 	AppleLock();
-	if (f->dir && f->conn && pAFCDirectoryClose)
-		pAFCDirectoryClose(f->conn, f->dir);
+	if (f->dir && f->conn && pAFCDirectoryClose) {
+		__try {
+			pAFCDirectoryClose(f->conn, f->dir);
+		} __except(EXCEPTION_EXECUTE_HANDLER) {
+		}
+	}
 	f->magic=0;
 	free(f);
 	AppleUnlock();
