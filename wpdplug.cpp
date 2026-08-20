@@ -956,6 +956,89 @@ static BOOL QueryWpdMgrString(IPortableDeviceManager* mgr, LPCWSTR pnpId, int ki
 	return TRUE;
 }
 
+static void ComposeWpdDisplayName(WCHAR* out, DWORD cch, LPCWSTR model, LPCWSTR mfr, LPCWSTR friendly)
+{
+	if (!out || cch<2)
+		return;
+	out[0]=0;
+	WCHAR pick[256]=L"";
+	if (!IsGenericWpdName(model))
+		wcslcpy(pick, model, 256);
+	else if (!IsGenericWpdName(friendly))
+		wcslcpy(pick, friendly, 256);
+	if (pick[0]) {
+		if (!IsGenericWpdName(mfr) && mfr && wcslen(mfr)>=2 && !NameContainsI(pick, mfr))
+			swprintf_s(out, cch, L"%s %s", mfr, pick);
+		else
+			wcslcpy(out, pick, cch);
+		return;
+	}
+	if (!IsGenericWpdName(mfr))
+		wcslcpy(out, mfr, cch);
+}
+
+static BOOL CopyWpdPropString(IPortableDeviceValues* v, REFPROPERTYKEY key, WCHAR* dest, DWORD cch)
+{
+	if (!dest || !cch)
+		return FALSE;
+	dest[0]=0;
+	if (!v)
+		return FALSE;
+	LPWSTR s=NULL;
+	if (SUCCEEDED(v->GetStringValue(key, &s)) && s && s[0]) {
+		wcslcpy(dest, s, cch);
+		SanitizeFriendlyName(dest);
+	}
+	if (s)
+		CoTaskMemFree(s);
+	return dest[0]!=0;
+}
+
+// Same properties as Alt+Enter / quote info (WPD_DEVICE_MODEL), not PnP USB1.
+static BOOL QueryOpenedDeviceIdentity(IPortableDevice* dev, WCHAR* model, DWORD mcch, WCHAR* mfr, DWORD frcch, WCHAR* friendly, DWORD fcch)
+{
+	if (model && mcch)
+		model[0]=0;
+	if (mfr && frcch)
+		mfr[0]=0;
+	if (friendly && fcch)
+		friendly[0]=0;
+	if (!dev)
+		return FALSE;
+	IPortableDeviceContent* content=NULL;
+	if (FAILED(dev->Content(&content)) || !content)
+		return FALSE;
+	IPortableDeviceProperties* props=NULL;
+	HRESULT hr=content->Properties(&props);
+	content->Release();
+	if (FAILED(hr) || !props)
+		return FALSE;
+	IPortableDeviceKeyCollection* keys=NULL;
+	hr=CoCreateInstance(CLSID_PortableDeviceKeyCollection, NULL, CLSCTX_INPROC_SERVER,
+		IID_IPortableDeviceKeyCollection, (void**)&keys);
+	if (FAILED(hr) || !keys) {
+		props->Release();
+		return FALSE;
+	}
+	keys->Add(WPD_DEVICE_MODEL);
+	keys->Add(WPD_DEVICE_MANUFACTURER);
+	keys->Add(WPD_DEVICE_FRIENDLY_NAME);
+	IPortableDeviceValues* v=NULL;
+	hr=props->GetValues(WPD_DEVICE_OBJECT_ID, keys, &v);
+	keys->Release();
+	props->Release();
+	if (FAILED(hr) || !v)
+		return FALSE;
+	if (model && mcch)
+		CopyWpdPropString(v, WPD_DEVICE_MODEL, model, mcch);
+	if (mfr && frcch)
+		CopyWpdPropString(v, WPD_DEVICE_MANUFACTURER, mfr, frcch);
+	if (friendly && fcch)
+		CopyWpdPropString(v, WPD_DEVICE_FRIENDLY_NAME, friendly, fcch);
+	v->Release();
+	return (model && model[0]) || (mfr && mfr[0]) || (friendly && friendly[0]);
+}
+
 static void PickWpdDisplayName(IPortableDeviceManager* mgr, LPCWSTR pnpId, DWORD index, WCHAR* out, DWORD cch)
 {
 	if (!out || cch<2)
@@ -965,28 +1048,43 @@ static void PickWpdDisplayName(IPortableDeviceManager* mgr, LPCWSTR pnpId, DWORD
 	QueryWpdMgrString(mgr, pnpId, 0, friendly, 256);
 	QueryWpdMgrString(mgr, pnpId, 1, desc, 256);
 	QueryWpdMgrString(mgr, pnpId, 2, mfr, 256);
-
-	WCHAR model[256]=L"";
-	if (!IsGenericWpdName(desc))
-		wcslcpy(model, desc, 256);
-	else if (!IsGenericWpdName(friendly))
-		wcslcpy(model, friendly, 256);
-
-	if (model[0]) {
-		if (!IsGenericWpdName(mfr) && wcslen(mfr)>=2 && !NameContainsI(model, mfr))
-			swprintf_s(out, cch, L"%s %s", mfr, model);
-		else
-			wcslcpy(out, model, cch);
+	ComposeWpdDisplayName(out, cch, desc, mfr, friendly);
+	if (out[0] && !IsGenericWpdName(out))
 		return;
-	}
-	if (!IsGenericWpdName(mfr)) {
-		wcslcpy(out, mfr, cch);
-		return;
-	}
 	if (pnpId && NameContainsI(pnpId, L"usb"))
 		swprintf_s(out, cch, L"USB%d", index+1);
 	else
 		swprintf_s(out, cch, L"Device%d", index+1);
+}
+
+static void RefineNamesFromWpdModel(void)
+{
+	for (DWORD i=0;i<StoredNumIds;i++) {
+		IPortableDevice* dev=StoredDevices[i];
+		if (!dev) {
+			if (FAILED(OpenWpdDevice(StoredPnpDeviceIDs[i], &dev)) || !dev)
+				continue;
+			StoredDevices[i]=dev;
+		}
+		WCHAR model[256]=L"", mfr[256]=L"", friendly[256]=L"", showname[256]=L"";
+		if (!QueryOpenedDeviceIdentity(dev, model, 256, mfr, 256, friendly, 256))
+			continue;
+		ComposeWpdDisplayName(showname, 256, model, mfr, friendly);
+		if (!showname[0] || IsGenericWpdName(showname))
+			continue;
+		SanitizeFriendlyName(showname);
+		if (StoredPnPFriendlyNames[i] && wcscmp(StoredPnPFriendlyNames[i], showname)==0)
+			continue;
+		CoTaskMemFree(StoredPnPFriendlyNames[i]);
+		StoredPnPFriendlyNames[i]=wstrnew(showname);
+		if (!StoredPnPFriendlyNames[i]) {
+			StoredPnPFriendlyNames[i]=(PWSTR)CoTaskMemRealloc(NULL,16*sizeof(WCHAR));
+			if (StoredPnPFriendlyNames[i])
+				swprintf_s(StoredPnPFriendlyNames[i],16,L"Device%d",i+1);
+		}
+	}
+	for (DWORD i=0;i<StoredNumIds;i++)
+		MakeFriendlyNameUnique(i);
 }
 
 BOOL LoadAllDevices()
@@ -1055,6 +1153,7 @@ BOOL LoadAllDevices()
 			keep++;
 		}
 		StoredNumIds=keep;
+		RefineNamesFromWpdModel();
 	}
 	return true;
 }
