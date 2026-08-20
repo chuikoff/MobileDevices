@@ -1,6 +1,6 @@
 [plugininstall]
-description=MTP Devices - access phones, players and cameras via MTP
+description=Mobile Devices - Android MTP and iPhone files in Total Commander
 type=wfx
-file=mtpdevices.wfx
-defaultdir=MTPDevices
+file=mobiledevices.wfx
+defaultdir=MobileDevices
 version=0.9

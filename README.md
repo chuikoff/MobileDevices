@@ -1,7 +1,7 @@
-# MTP Devices
+# Mobile Devices
 
 Плагин файловой системы **Total Commander (WFX)** для **Android** и **iPhone**.  
-В сетевом окружении TC: **MTP Devices**. Файлы: `mtpdevices.wfx` (32-bit) и `mtpdevices.wfx64` (64-bit).
+В сетевом окружении TC: **Mobile Devices**. Файлы: `mobiledevices.wfx` (32-bit) и `mobiledevices.wfx64` (64-bit).
 
 Каталоги читаются **намного быстрее**, чем через стандартный MTP Windows / Проводник: пакетное чтение свойств, без повторного подключения на каждый переход. Копирование идёт в фоне (F5/F6), без типичных зависаний MTP.
 
@@ -66,4 +66,4 @@ Open `wpdplug.sln` in Visual Studio 2022. Release | Win32 → `.wfx`, Release | 
 ## Credits
 
 Original plugin © 2011–2018 Christian Ghisler, Ghisler Software GmbH.  
-Modifications © 2026 MTP Devices contributors.
+Modifications © 2026 Mobile Devices contributors.

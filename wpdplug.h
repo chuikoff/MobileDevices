@@ -16,10 +16,11 @@
 #define PLUGIN_VERSION_STR   "0.9"
 #define PLUGIN_VERSION_COMMA 0,9,0,0
 
-#define PLUGIN_DISPLAY_NAME     "MTP Devices"
-#define PLUGIN_DISPLAY_NAME_W   L"MTP Devices"
-#define PLUGIN_FILE_STEM        "mtpdevices"
-#define PLUGIN_INI_SECTION      L"MTPDevices"
-#define PLUGIN_INI_SECTION_LEGACY L"MediaAudio2"
-#define PLUGIN_WPD_CLIENT_NAME  L"Total Commander MTP Devices"
+#define PLUGIN_DISPLAY_NAME     "Mobile Devices"
+#define PLUGIN_DISPLAY_NAME_W   L"Mobile Devices"
+#define PLUGIN_FILE_STEM        "mobiledevices"
+#define PLUGIN_INI_SECTION      L"MobileDevices"
+#define PLUGIN_INI_SECTION_LEGACY L"MTPDevices"
+#define PLUGIN_INI_SECTION_LEGACY2 L"MediaAudio2"
+#define PLUGIN_WPD_CLIENT_NAME  L"Total Commander Mobile Devices"
 

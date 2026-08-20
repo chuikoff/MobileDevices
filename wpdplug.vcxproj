@@ -73,28 +73,28 @@
     <OutDir>$(SolutionDir)Plugin\</OutDir>
     <IntDir>$(Configuration)\</IntDir>
     <TargetExt>.wfx</TargetExt>
-    <TargetName>mtpdevices</TargetName>
+    <TargetName>mobiledevices</TargetName>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <LinkIncremental>false</LinkIncremental>
     <OutDir>$(SolutionDir)Plugin\</OutDir>
     <IntDir>$(Configuration)\</IntDir>
     <TargetExt>.wfx</TargetExt>
-    <TargetName>mtpdevices</TargetName>
+    <TargetName>mobiledevices</TargetName>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <LinkIncremental>true</LinkIncremental>
     <OutDir>$(SolutionDir)Plugin\</OutDir>
     <IntDir>$(Platform)\$(Configuration)\</IntDir>
     <TargetExt>.wfx64</TargetExt>
-    <TargetName>mtpdevices</TargetName>
+    <TargetName>mobiledevices</TargetName>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <LinkIncremental>false</LinkIncremental>
     <OutDir>$(SolutionDir)Plugin\</OutDir>
     <IntDir>$(Platform)\$(Configuration)\</IntDir>
     <TargetExt>.wfx64</TargetExt>
-    <TargetName>mtpdevices</TargetName>
+    <TargetName>mobiledevices</TargetName>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
@@ -175,7 +175,7 @@
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Manifest>
-      <AdditionalManifestFiles>mtpdevices.manifest;%(AdditionalManifestFiles)</AdditionalManifestFiles>
+      <AdditionalManifestFiles>mobiledevices.manifest;%(AdditionalManifestFiles)</AdditionalManifestFiles>
       <EnableDpiAwareness>PerMonitorHighDPIAware</EnableDpiAwareness>
     </Manifest>
   </ItemDefinitionGroup>
@@ -200,7 +200,7 @@
     <ClInclude Include="wpdplug_int.h" />
   </ItemGroup>
   <ItemGroup>
-    <None Include="mtpdevices.manifest" />
+    <None Include="mobiledevices.manifest" />
     <None Include="LICENSE.txt" />
     <None Include="pluginst.inf" />
     <None Include="ReadMe.txt" />

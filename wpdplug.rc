@@ -26,7 +26,7 @@ LANGUAGE LANG_NEUTRAL, SUBLANG_NEUTRAL
 
 IDD_CONNECTIONSETTINGS DIALOGEX 0, 0, 300, 268
 STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
-CAPTION "MTP Devices"
+CAPTION "Mobile Devices"
 FONT 9, "Segoe UI", 400, 0, 0x1
 BEGIN
     LTEXT           "Language",IDC_LANG_LABEL,12,10,80,10
@@ -116,12 +116,12 @@ BEGIN
         BLOCK "040904b0"
         BEGIN
             VALUE "CompanyName", "Ghisler Software GmbH"
-            VALUE "FileDescription", "MTP Devices - Total Commander WPD/MTP plugin (modified from MediaAudio2)"
+            VALUE "FileDescription", "Mobile Devices - Total Commander Android/iPhone plugin (modified from MediaAudio2)"
             VALUE "FileVersion", "0.9.0.0"
-            VALUE "InternalName", "mtpdevices"
+            VALUE "InternalName", "mobiledevices"
             VALUE "LegalCopyright", "Copyright (C) 2011-2018 Christian Ghisler, Ghisler Software GmbH. Modifications (C) 2026. BSD-3-Clause."
-            VALUE "OriginalFilename", "mtpdevices.wfx"
-            VALUE "ProductName", "MTP Devices"
+            VALUE "OriginalFilename", "mobiledevices.wfx"
+            VALUE "ProductName", "Mobile Devices"
             VALUE "ProductVersion", "0.9.0.0"
         END
     END

@@ -61,13 +61,18 @@ static int ReadLocalTimeIni(WCHAR* keyName)
 	int value=GetPrivateProfileIntW(PLUGIN_INI_SECTION,keyName,-1,DefaultIniNameW);
 	if (value>=0)
 		return value;
-	return GetPrivateProfileIntW(PLUGIN_INI_SECTION_LEGACY,keyName,2,DefaultIniNameW);
+	value=GetPrivateProfileIntW(PLUGIN_INI_SECTION_LEGACY,keyName,-1,DefaultIniNameW);
+	if (value>=0)
+		return value;
+	return GetPrivateProfileIntW(PLUGIN_INI_SECTION_LEGACY2,keyName,2,DefaultIniNameW);
 }
 
 int GetPluginUiLanguage(void)
 {
 	WCHAR buf[16]=L"";
 	GetPrivateProfileStringW(PLUGIN_INI_SECTION,L"Language",L"",buf,16,DefaultIniNameW);
+	if (!buf[0])
+		GetPrivateProfileStringW(PLUGIN_INI_SECTION_LEGACY,L"Language",L"",buf,16,DefaultIniNameW);
 	if (buf[0]==L'r' || buf[0]==L'R' || buf[0]==L'1')
 		return UI_LANG_RU;
 	if (buf[0]==L'e' || buf[0]==L'E' || buf[0]==L'0')

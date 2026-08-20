@@ -1,16 +1,16 @@
-MTP Devices plugin v0.9
+Mobile Devices plugin v0.9
 =======================
 Modified from Windows Media Audio 2 (wpdplug) by Christian Ghisler.
 
 Copyright (C) 2011-2018 Christian Ghisler, Ghisler Software GmbH
-Copyright (C) 2026 MTP Devices contributors
+Copyright (C) 2026 Mobile Devices contributors
 
 This is free software under the 3-clause BSD license. See LICENSE.txt.
 This is an altered version and must not be presented as the original
 MediaAudio2 plugin.
 
-The plugin appears in Network Neighborhood as "MTP Devices".
-Files: mtpdevices.wfx (32-bit) and mtpdevices.wfx64 (64-bit).
+The plugin appears in Network Neighborhood as "Mobile Devices".
+Files: mobiledevices.wfx (32-bit) and mobiledevices.wfx64 (64-bit).
 
 Directory listing is much faster than standard Windows MTP.
 Copy runs in the background (F5/F6). iPhone files are managed
@@ -72,4 +72,4 @@ Features
     from the Microsoft Store.
 
 Timezone settings (Alt+Enter on the device) are stored under
-[MTPDevices].
+[MobileDevices].

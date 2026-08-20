@@ -1,11 +1,11 @@
-MTP Devices - Total Commander file system plugin (WFX)
-======================================================
+Mobile Devices - Total Commander file system plugin (WFX)
+=========================================================
 
 This is a modified version of the Windows Media Audio 2 (wpdplug) plugin
 originally written by Christian Ghisler.
 
 Copyright (C) 2011-2018 Christian Ghisler, Ghisler Software GmbH
-Copyright (C) 2026 MTP Devices contributors
+Copyright (C) 2026 Mobile Devices contributors
 
 The original plugin was released as free software under a BSD-Style licence.
 This modified version is distributed under the 3-clause BSD license below.

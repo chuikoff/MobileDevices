@@ -781,9 +781,9 @@ static BOOL StageAppleDlls(LPCWSTR pkg, WCHAR* dest, int destcch)
 	if (!GetEnvironmentVariableW(L"LOCALAPPDATA", local, MAX_PATH) || !local[0])
 		return FALSE;
 #ifdef _WIN64
-	swprintf_s(dest, destcch, L"%s\\MTPDevices\\amds64", local);
+	swprintf_s(dest, destcch, L"%s\\MobileDevices\\amds64", local);
 #else
-	swprintf_s(dest, destcch, L"%s\\MTPDevices\\amds32", local);
+	swprintf_s(dest, destcch, L"%s\\MobileDevices\\amds32", local);
 #endif
 	EnsureDirW(dest);
 	static const WCHAR* names[]={
