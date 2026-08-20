@@ -137,7 +137,9 @@ PWSTR* StoredPnpDeviceIDs=NULL;   // keep them globally!
 PWSTR* StoredPnPFriendlyNames=NULL;
 IPortableDevice** StoredDevices=NULL;
 LPWSTR* StoredEventCookies=NULL;
+static LONG* StoredDeviceBusy=NULL;
 DWORD StoredNumIds=0;
+static __declspec(thread) int t_pluginLockHeld=0;
 
 PWSTR FindPnpIdByPath(LPCWSTR path)
 {
@@ -164,11 +166,64 @@ HWND hWndNotify=NULL;
 void LockPlugin(void)
 {
 	EnterCriticalSection(&g_cs);
+	t_pluginLockHeld++;
 }
 
 void UnlockPlugin(void)
 {
+	t_pluginLockHeld--;
 	LeaveCriticalSection(&g_cs);
+}
+
+static DWORD FindStoredDeviceIndexByPath(LPCWSTR path)
+{
+	if (!path || !StoredPnPFriendlyNames)
+		return (DWORD)-1;
+	WCHAR name[MAX_PATH];
+	const WCHAR* p=path;
+	if (p[0]=='\\')
+		p++;
+	wcslcpy(name,p,MAX_PATH-1);
+	WCHAR* slash=wcschr(name,'\\');
+	if (slash)
+		slash[0]=0;
+	for (DWORD i=0;i<StoredNumIds;i++) {
+		if (StoredPnPFriendlyNames[i] && wcscmp(StoredPnPFriendlyNames[i],name)==0)
+			return i;
+	}
+	return (DWORD)-1;
+}
+
+static void TransferBegin(DWORD idx)
+{
+	if (idx!=(DWORD)-1 && StoredDeviceBusy)
+		InterlockedIncrement(&StoredDeviceBusy[idx]);
+}
+
+static void TransferEnd(DWORD idx)
+{
+	if (idx!=(DWORD)-1 && StoredDeviceBusy)
+		InterlockedDecrement(&StoredDeviceBusy[idx]);
+}
+
+static void WaitDeviceTransfersIdle(void)
+{
+	for (;;) {
+		BOOL busy=FALSE;
+		if (StoredDeviceBusy) {
+			for (DWORD i=0;i<StoredNumIds;i++) {
+				if (InterlockedCompareExchange(&StoredDeviceBusy[i],0,0)!=0) {
+					busy=TRUE;
+					break;
+				}
+			}
+		}
+		if (!busy)
+			return;
+		LeaveCriticalSection(&g_cs);
+		Sleep(10);
+		EnterCriticalSection(&g_cs);
+	}
 }
 
 BOOL EnsureComApartment(void)
@@ -230,9 +285,12 @@ BOOL IsContentStop(void)
 
 int ProgressCheck(WCHAR* src, WCHAR* dst, int percent)
 {
-	LeaveCriticalSection(&g_cs);
+	BOOL held=t_pluginLockHeld>0;
+	if (held)
+		LeaveCriticalSection(&g_cs);
 	int err=ProgressProcT(PluginNumber,src,dst,percent);
-	EnterCriticalSection(&g_cs);
+	if (held)
+		EnterCriticalSection(&g_cs);
 	if (err)
 		RequestAbort();
 	return err;
@@ -1148,7 +1206,8 @@ BOOL LoadAllDevices()
 		int sz=StoredNumIds*sizeof(IPortableDevice*);
 		StoredDevices = (IPortableDevice**)malloc(sz);
 		StoredEventCookies = (LPWSTR*)malloc(StoredNumIds*sizeof(LPWSTR));
-		if (!StoredPnpDeviceIDs || !StoredPnPFriendlyNames || !StoredDevices || !StoredEventCookies) {
+		StoredDeviceBusy = (LONG*)malloc(StoredNumIds*sizeof(LONG));
+		if (!StoredPnpDeviceIDs || !StoredPnPFriendlyNames || !StoredDevices || !StoredEventCookies || !StoredDeviceBusy) {
 			FreeDeviceList();
 			return false;
 		}
@@ -1156,6 +1215,7 @@ BOOL LoadAllDevices()
 		memset(StoredPnPFriendlyNames,0,StoredNumIds*sizeof(LPWSTR));
 		memset(StoredDevices,0,sz);
 		memset(StoredEventCookies,0,StoredNumIds*sizeof(LPWSTR));
+		memset(StoredDeviceBusy,0,StoredNumIds*sizeof(LONG));
 		hr = pDevMgr->GetDevices(StoredPnpDeviceIDs, &StoredNumIds);
 		if (FAILED(hr)) {
 			LogWpdError(L"GetDevices(list)", hr);
@@ -1895,6 +1955,7 @@ int __stdcall FsInitW(int PluginNr,tProgressProcW pProgressProcW,tLogProcW pLogP
 
 void FreeDeviceList()
 {
+	WaitDeviceTransfersIdle();
 	for (DWORD i=0;i<StoredNumIds;i++) {
 		if (StoredDevices && StoredDevices[i] && StoredEventCookies)
 			UnadviseWpdDevice(StoredDevices[i], StoredEventCookies[i]);
@@ -1913,10 +1974,13 @@ void FreeDeviceList()
 		free(StoredDevices);
 	if (StoredEventCookies)
 		free(StoredEventCookies);
+	if (StoredDeviceBusy)
+		free(StoredDeviceBusy);
 	StoredPnpDeviceIDs=NULL;
 	StoredPnPFriendlyNames=NULL;
 	StoredDevices=NULL;
 	StoredEventCookies=NULL;
+	StoredDeviceBusy=NULL;
 	StoredNumIds=0;
 	connected=false;
 }
@@ -2506,6 +2570,9 @@ int __stdcall FsGetFileW(WCHAR* RemoteName,WCHAR* LocalName,int CopyFlags,Remote
 			if (!buf) {
 				result=FS_FILE_READERROR;
 			} else {
+				DWORD xferDev=FindStoredDeviceIndexByPath(WRemoteName);
+				TransferBegin(xferDev);
+				UnlockPlugin();
 				DWORD BytesRead,BytesWritten;
 				HANDLE f=CreateFileT(LocalName,GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE,NULL,CREATE_ALWAYS,0,NULL);
 				if (f!=INVALID_HANDLE_VALUE) {
@@ -2547,6 +2614,8 @@ int __stdcall FsGetFileW(WCHAR* RemoteName,WCHAR* LocalName,int CopyFlags,Remote
 				} else
 					result=FS_FILE_WRITEERROR;
 				free(buf);
+				LockPlugin();
+				TransferEnd(xferDev);
 			}
 		}
 	}
@@ -2859,6 +2928,9 @@ int __stdcall FsPutFileW(WCHAR* LocalName,WCHAR* RemoteName,int CopyFlags)
 								if (!buf) {
 									result=FS_FILE_READERROR;
 								} else {
+									DWORD xferDev=FindStoredDeviceIndexByPath(RemoteName);
+									TransferBegin(xferDev);
+									UnlockPlugin();
 									DWORD BytesRead,BytesWritten;
 									DWORD lasttime=GetTickCount();
 									DWORD thistime;
@@ -2887,6 +2959,8 @@ int __stdcall FsPutFileW(WCHAR* LocalName,WCHAR* RemoteName,int CopyFlags)
 										}
 									}
 									free(buf);
+									LockPlugin();
+									TransferEnd(xferDev);
 								}
 								if (result==FS_FILE_OK)
 									pStream->Commit(STGC_DEFAULT);
