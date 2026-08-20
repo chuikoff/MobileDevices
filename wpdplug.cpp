@@ -2516,7 +2516,7 @@ int __stdcall FsGetFileW(WCHAR* RemoteName,WCHAR* LocalName,int CopyFlags,Remote
 							}
 							totalcopied+=BytesWritten;
 							thistime=GetTickCount();
-							if (totalsize && abs((int)thistime-(int)lasttime)>100) {
+							if (totalsize && (thistime-lasttime)>100) {
 								int percent=(int)((totalcopied*100)/totalsize);
 								lasttime=thistime;
 								err=ProgressCheck(NULL,NULL,percent);
@@ -2865,7 +2865,7 @@ int __stdcall FsPutFileW(WCHAR* LocalName,WCHAR* RemoteName,int CopyFlags)
 											}
 											totalcopied+=BytesWritten;
 											thistime=GetTickCount();
-											if (totalsize && abs((int)thistime-(int)lasttime)>100) {
+											if (totalsize && (thistime-lasttime)>100) {
 												int percent=(int)((totalcopied*100)/totalsize);
 												lasttime=thistime;
 												err=ProgressCheck(NULL,NULL,percent);
