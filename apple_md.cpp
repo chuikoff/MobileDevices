@@ -1059,6 +1059,10 @@ void AppleMdShutdown(void)
 		ClosePhone(&g_phones[i]);
 	g_nphones=0;
 	AppleUnlock();
+	if (g_appleCsInit) {
+		DeleteCriticalSection(&g_appleCs);
+		g_appleCsInit=FALSE;
+	}
 }
 
 int AppleMdCount(void)
@@ -1793,6 +1797,7 @@ static DWORD WINAPI PanicOpenThread(LPVOID arg)
 			for (;;) {
 				char* name=NULL;
 				BOOL got=FALSE;
+				/* SEH skips C++ destructors. Keep only POD in this __try. */
 				__try {
 					got=(pAFCDirectoryRead(conn, dir, &name)==0 && name && name[0]);
 				} __except(EXCEPTION_EXECUTE_HANDLER) {

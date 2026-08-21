@@ -105,8 +105,8 @@ IDI_IPHONE              ICON                    "ICONIPHONE.ICO"
 //
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 0,9,19,0
- PRODUCTVERSION 0,9,19,0
+ FILEVERSION 0,9,20,0
+ PRODUCTVERSION 0,9,20,0
  FILEFLAGSMASK 0x3fL
 #ifdef _DEBUG
  FILEFLAGS 0x1L
@@ -123,12 +123,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "Ghisler Software GmbH"
             VALUE "FileDescription", "Mobile Devices - Total Commander Android/iPhone plugin (modified from MediaAudio2)"
-            VALUE "FileVersion", "0.9.19.0"
+            VALUE "FileVersion", "0.9.20.0"
             VALUE "InternalName", "mobiledevices"
             VALUE "LegalCopyright", "Copyright (C) 2011-2018 Christian Ghisler, Ghisler Software GmbH. Modifications (C) 2026. BSD-3-Clause."
             VALUE "OriginalFilename", "mobiledevices.wfx"
             VALUE "ProductName", "Mobile Devices"
-            VALUE "ProductVersion", "0.9.19.0"
+            VALUE "ProductVersion", "0.9.20.0"
         END
     END
     BLOCK "VarFileInfo"
