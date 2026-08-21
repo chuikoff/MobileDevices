@@ -584,6 +584,14 @@ static BOOL StartNamedService(ApplePhone* p, const char* name, int* sock)
 	return FALSE;
 }
 
+static void CloseAppleSock(int* sock)
+{
+	if (!sock || *sock==0)
+		return;
+	closesocket(*sock);
+	*sock=0;
+}
+
 static BOOL AfcOpenAny(void* handle, afc_connection* out)
 {
 	*out=NULL;
@@ -613,10 +621,12 @@ static BOOL EnsureSession(ApplePhone* p)
 	int sock=0;
 	if (!StartNamedService(p, "com.apple.afc", &sock))
 		return FALSE;
-	p->sock=sock;
 	afc_connection conn=NULL;
-	if (!AfcOpenAny((void*)(intptr_t)(unsigned)sock, &conn) || !conn)
+	if (!AfcOpenAny((void*)(intptr_t)(unsigned)sock, &conn) || !conn) {
+		CloseAppleSock(&sock);
 		return FALSE;
+	}
+	p->sock=sock;
 	p->afc=conn;
 	return TRUE;
 }
@@ -1600,7 +1610,7 @@ static BOOL HouseArrest(ApplePhone* p, const char* bundle, const char* command, 
 	if (!StartNamedService(p, "com.apple.mobile.house_arrest", sock))
 		return FALSE;
 	if (!HouseArrestSend(*sock, command, bundle)) {
-		*sock=0;
+		CloseAppleSock(sock);
 		return FALSE;
 	}
 	CFTypeRef pl=PlistRecv(*sock);
@@ -1613,7 +1623,7 @@ static BOOL HouseArrest(ApplePhone* p, const char* bundle, const char* command, 
 		pCFRelease(pl);
 	}
 	if (!ok)
-		*sock=0;
+		CloseAppleSock(sock);
 	return ok;
 }
 
@@ -1718,8 +1728,10 @@ static BOOL AppDocumentsOpen(ApplePhone* p, const char* bundle, afc_connection* 
 		if (!HouseArrest(p, bundle, "VendContainer", &sock) || sock==0)
 			return FALSE;
 	afc_connection conn=NULL;
-	if (!AfcOpenAny((void*)(intptr_t)(unsigned)sock, &conn) || !conn)
+	if (!AfcOpenAny((void*)(intptr_t)(unsigned)sock, &conn) || !conn) {
+		CloseAppleSock(&sock);
 		return FALSE;
+	}
 	*outConn=conn;
 	*outSock=sock;
 	return TRUE;
@@ -1779,6 +1791,8 @@ static DWORD WINAPI PanicOpenThread(LPVOID arg)
 		int sock=0;
 		if (StartNamedService(j->p, "com.apple.crashreportcopymobile", &sock) && sock)
 			ok=AfcOpenAny((void*)(intptr_t)(unsigned)sock, &conn);
+		if (!ok)
+			CloseAppleSock(&sock);
 	}
 	if (j->cancel) {
 		if (conn && pAFCConnectionClose) {
@@ -1797,7 +1811,7 @@ static DWORD WINAPI PanicOpenThread(LPVOID arg)
 			for (;;) {
 				char* name=NULL;
 				BOOL got=FALSE;
-				/* SEH skips C++ destructors. Keep only POD in this __try. */
+				/* Do not add C++ objects with destructors in this __try: SEH will skip them. */
 				__try {
 					got=(pAFCDirectoryRead(conn, dir, &name)==0 && name && name[0]);
 				} __except(EXCEPTION_EXECUTE_HANDLER) {
