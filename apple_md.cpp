@@ -2176,8 +2176,12 @@ int AppleMdGetFile(LPCWSTR deviceName, LPCWSTR relPath, LPCWSTR localPath, ULONG
 		}
 		if (n==0)
 			break;
+		if (n>sizeof(buf)) {
+			result=FS_FILE_READERROR;
+			break;
+		}
 		DWORD wr=0;
-		if (!WriteFile(out, buf, (DWORD)n, &wr, NULL)) {
+		if (!WriteFile(out, buf, (DWORD)n, &wr, NULL) || wr!=(DWORD)n) {
 			result=FS_FILE_WRITEERROR;
 			break;
 		}
@@ -2314,8 +2318,12 @@ int AppleMdPutFile(LPCWSTR deviceName, LPCWSTR relPath, LPCWSTR localPath, BOOL 
 		}
 		if (rd==0)
 			break;
+		if (rd>sizeof(buf)) {
+			result=FS_FILE_READERROR;
+			break;
+		}
 		size_t n=rd;
-		if (pAFCFileRefWrite(conn, ref, buf, &n)!=0) {
+		if (pAFCFileRefWrite(conn, ref, buf, &n)!=0 || n!=(size_t)rd) {
 			result=FS_FILE_WRITEERROR;
 			break;
 		}
