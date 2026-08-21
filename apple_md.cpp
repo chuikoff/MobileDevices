@@ -343,7 +343,33 @@ static BOOL CopyValueU64(am_device dev, const char* domain, const char* key, ULO
 
 static void WideToUtf8(LPCWSTR w, char* u, int u8cch)
 {
-	WideCharToMultiByte(CP_UTF8, 0, w, -1, u, u8cch, NULL, NULL);
+	if (!u || u8cch<=0)
+		return;
+	u[0]=0;
+	if (!w)
+		w=L"";
+	if (WideCharToMultiByte(CP_UTF8, 0, w, -1, u, u8cch, NULL, NULL)>0)
+		return;
+	/* Buffer too small (or other error): convert the longest prefix that fits. */
+	int wlen=(int)wcslen(w);
+	int lo=0, hi=wlen, fit=0;
+	while (lo<=hi) {
+		int mid=lo+((hi-lo)/2);
+		int need=WideCharToMultiByte(CP_UTF8, 0, w, mid, NULL, 0, NULL, NULL);
+		if (need>0 && need<=u8cch-1) {
+			fit=mid;
+			lo=mid+1;
+		} else
+			hi=mid-1;
+	}
+	if (fit>0) {
+		int n=WideCharToMultiByte(CP_UTF8, 0, w, fit, u, u8cch-1, NULL, NULL);
+		if (n>0) {
+			u[n]=0;
+			return;
+		}
+	}
+	u[0]=0;
 }
 
 static BOOL PathLooksLikeDir(afc_connection conn, const char* path)
