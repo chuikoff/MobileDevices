@@ -67,3 +67,10 @@ Open `wpdplug.sln` in Visual Studio 2022. Release | Win32 → `.wfx`, Release | 
 
 Original plugin © 2011–2018 Christian Ghisler, Ghisler Software GmbH.  
 Modifications © 2026 Mobile Devices contributors.
+
+Поддержка / Support
+
+Если модуль помог — можно поддержать автора на Boosty.
+If this module helped you, you can support the author on Boosty:
+
+**[Поддержать на Boosty / Support on Boosty](https://boosty.to/chuikoff)**
