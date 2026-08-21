@@ -184,6 +184,7 @@
     <ClCompile Include="connectionsettings.cpp" />
     <ClCompile Include="cunicode.cpp" />
     <ClCompile Include="extra.cpp" />
+    <ClCompile Include="tc_ansi.cpp" />
     <ClCompile Include="utils.cpp" />
     <ClCompile Include="wpd20.cpp" />
     <ClCompile Include="wpdplug.cpp" />

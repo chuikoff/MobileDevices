@@ -1,24 +1,41 @@
 EXPORTS
+	FsInit
 	FsInitW
+	FsFindFirst
 	FsFindFirstW
+	FsFindNext
 	FsFindNextW
 	FsFindClose
+	FsDisconnect
 	FsDisconnectW
+	FsMkDir
 	FsMkDirW
+	FsDeleteFile
 	FsDeleteFileW
+	FsRemoveDir
 	FsRemoveDirW
+	FsRenMovFile
 	FsRenMovFileW
+	FsGetFile
 	FsGetFileW
+	FsPutFile
 	FsPutFileW
+	FsExecuteFile
 	FsExecuteFileW
 	FsGetDefRootName
 	FsSetDefaultParams
 	FsContentGetSupportedField
+	FsContentGetValue
 	FsContentGetValueW
+	FsContentStopGetValue
 	FsContentStopGetValueW
+	FsContentGetDefaultView
 	FsContentGetDefaultViewW
 	FsContentPluginUnloading
 	FsGetBackgroundFlags
+	FsStatusInfo
 	FsStatusInfoW
+	FsGetPreviewBitmap
 	FsGetPreviewBitmapW
+	FsExtractCustomIcon
 	FsExtractCustomIconW

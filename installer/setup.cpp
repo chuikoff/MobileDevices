@@ -133,7 +133,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int)
 
 	WCHAR msg[1024];
 	swprintf_s(msg,
-		L"Mobile Devices 0.9.12 установлен.\n\n%s\n\nПерезапустите Total Commander.",
+		L"Mobile Devices 0.9.13 установлен.\n\n%s\n\nПерезапустите Total Commander.",
 		dest);
 	MessageBoxW(NULL, msg, L"Mobile Devices", MB_ICONINFORMATION);
 	return 0;
