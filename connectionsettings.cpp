@@ -50,6 +50,12 @@ int GetPluginUiLanguage(void)
 	return UI_LANG_EN;
 }
 
+static void SavePluginUiLanguage(int lang)
+{
+	WritePrivateProfileStringW(PLUGIN_INI_SECTION,L"Language",
+		lang==UI_LANG_RU ? L"ru" : L"en", DefaultIniNameW);
+}
+
 int UseLocalTime(WCHAR* path)
 {
 	WCHAR SettingsName2[MAX_PATH];
@@ -105,30 +111,40 @@ static void OpenGitHub(HWND parent)
 	ShellExecuteW(parent, L"open", PLUGIN_GITHUB_URL_W, NULL, NULL, SW_SHOWNORMAL);
 }
 
+static void ApplyAboutLanguage(HWND hDlg, int lang)
+{
+	BOOL ru=(lang==UI_LANG_RU);
+	SetWindowTextW(hDlg, PLUGIN_DISPLAY_NAME_W);
+	SetDlgItemTextW(hDlg, IDC_ABOUT_TITLE, PLUGIN_DISPLAY_NAME_W);
+	WCHAR ver[80];
+	swprintf_s(ver, ru ? L"Версия %hs" : L"Version %hs", PLUGIN_VERSION_STR);
+	SetDlgItemTextW(hDlg, IDC_ABOUT_VER, ver);
+	SetDlgItemTextW(hDlg, IDC_ABOUT_DESC, ru
+		? L"Плагин Total Commander для Android (MTP) и iPhone.\nКаталоги читаются быстрее стандартного MTP."
+		: L"Total Commander plugin for Android (MTP) and iPhone.\nDirectory listing is faster than standard MTP.");
+	WCHAR link[320];
+	swprintf_s(link, L"<a href=\"%s\">%s</a>", PLUGIN_GITHUB_URL_W, PLUGIN_GITHUB_URL_W);
+	SetDlgItemTextW(hDlg, IDC_GITHUB_LINK, link);
+	SetDlgItemTextW(hDlg, IDC_LANG_LABEL, ru ? L"Язык:" : L"Language:");
+	SetDlgItemTextW(hDlg, IDOK, ru ? L"ОК" : L"OK");
+}
+
 static BOOL CALLBACK PluginAboutDlg(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
 {
 	switch (message)
 	{
 	case WM_INITDIALOG:
 		{
-			int ru=(GetPluginUiLanguage()==UI_LANG_RU);
 			g_aboutIcon=(HICON)LoadImageW(hInst, MAKEINTRESOURCEW(IDI_ICON1), IMAGE_ICON, 48, 48, LR_DEFAULTCOLOR);
 			if (g_aboutIcon) {
 				SendDlgItemMessageW(hDlg, IDC_PLUGIN_ICON, STM_SETICON, (WPARAM)g_aboutIcon, 0);
 				SendMessageW(hDlg, WM_SETICON, ICON_SMALL, (LPARAM)g_aboutIcon);
 			}
-			SetWindowTextW(hDlg, PLUGIN_DISPLAY_NAME_W);
-			SetDlgItemTextW(hDlg, IDC_ABOUT_TITLE, PLUGIN_DISPLAY_NAME_W);
-			WCHAR ver[80];
-			swprintf_s(ver, ru ? L"Версия %hs" : L"Version %hs", PLUGIN_VERSION_STR);
-			SetDlgItemTextW(hDlg, IDC_ABOUT_VER, ver);
-			SetDlgItemTextW(hDlg, IDC_ABOUT_DESC, ru
-				? L"Плагин Total Commander для Android (MTP) и iPhone.\nКаталоги читаются быстрее стандартного MTP."
-				: L"Total Commander plugin for Android (MTP) and iPhone.\nDirectory listing is faster than standard MTP.");
-			WCHAR link[320];
-			swprintf_s(link, L"<a href=\"%s\">%s</a>", PLUGIN_GITHUB_URL_W, PLUGIN_GITHUB_URL_W);
-			SetDlgItemTextW(hDlg, IDC_GITHUB_LINK, link);
-			SetDlgItemTextW(hDlg, IDOK, ru ? L"ОК" : L"OK");
+			SendDlgItemMessageW(hDlg, IDC_LANGUAGE, CB_ADDSTRING, 0, (LPARAM)L"English");
+			SendDlgItemMessageW(hDlg, IDC_LANGUAGE, CB_ADDSTRING, 0, (LPARAM)L"Русский");
+			int lang=GetPluginUiLanguage();
+			SendDlgItemMessageW(hDlg, IDC_LANGUAGE, CB_SETCURSEL, lang, 0);
+			ApplyAboutLanguage(hDlg, lang);
 			SetWindowTheme(hDlg, L"Explorer", NULL);
 		}
 		return TRUE;
@@ -144,7 +160,18 @@ static BOOL CALLBACK PluginAboutDlg(HWND hDlg, UINT message, WPARAM wParam, LPAR
 		}
 		break;
 	case WM_COMMAND:
+		if (LOWORD(wParam)==IDC_LANGUAGE && HIWORD(wParam)==CBN_SELCHANGE) {
+			int lang=(int)SendDlgItemMessageW(hDlg, IDC_LANGUAGE, CB_GETCURSEL, 0, 0);
+			if (lang<0)
+				lang=UI_LANG_EN;
+			SavePluginUiLanguage(lang);
+			ApplyAboutLanguage(hDlg, lang);
+			return TRUE;
+		}
 		if (LOWORD(wParam)==IDOK || LOWORD(wParam)==IDCANCEL) {
+			int lang=(int)SendDlgItemMessageW(hDlg, IDC_LANGUAGE, CB_GETCURSEL, 0, 0);
+			if (lang>=0)
+				SavePluginUiLanguage(lang);
 			EndDialog(hDlg, IDOK);
 			return TRUE;
 		}

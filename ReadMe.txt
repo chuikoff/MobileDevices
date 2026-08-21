@@ -1,4 +1,4 @@
-Mobile Devices plugin v0.9.9
+Mobile Devices plugin v0.9.10
 =======================
 Modified from Windows Media Audio 2 (wpdplug) by Christian Ghisler.
 
@@ -71,5 +71,6 @@ Features
 14. iPhone does not need iTunes drivers — install Apple Devices
     from the Microsoft Store.
 
-Alt+Enter on the plugin shows version and GitHub.
+Alt+Enter on the plugin shows version, GitHub and language (English / Russian).
 Alt+Enter on a device shows only device information.
+The plugin is Unicode-only (Total Commander 7.50 or later).

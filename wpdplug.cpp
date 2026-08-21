@@ -1694,17 +1694,6 @@ void PopulateFindDataW(PWSTR szObject,pLastFindStuct lf,WIN32_FIND_DATAW *FindDa
 	}
 }
 
-HANDLE __stdcall FsFindFirst(char* Path,WIN32_FIND_DATA *FindData)
-{
-	WCHAR PathW[wdirtypemax];
-	WIN32_FIND_DATAW FindDataW;
-	memset(&FindDataW,0,sizeof(FindDataW));
-	HANDLE h=FsFindFirstW(awfilenamecopy(PathW,Path),&FindDataW);
-	if (h!=INVALID_HANDLE_VALUE)
-		copyfinddatawa(FindData,&FindDataW);
-	return h;
-}
-
 HANDLE __stdcall FsFindFirstW(WCHAR* Path,WIN32_FIND_DATAW *FindData)
 {
 	pLastFindStuct lf;
@@ -1849,16 +1838,6 @@ HANDLE __stdcall FsFindFirstW(WCHAR* Path,WIN32_FIND_DATAW *FindData)
 	return INVALID_HANDLE_VALUE;
 }
 
-BOOL __stdcall FsFindNext(HANDLE Hdl,WIN32_FIND_DATA *FindData)
-{
-	WIN32_FIND_DATAW FindDataW;
-	memset(&FindDataW,0,sizeof(FindDataW));
-	if (!FsFindNextW(Hdl,&FindDataW))
-		return false;
-	copyfinddatawa(FindData,&FindDataW);
-	return true;
-}
-
 BOOL __stdcall FsFindNextW(HANDLE Hdl,WIN32_FIND_DATAW *FindData)
 {
 	HRESULT hr;
@@ -1955,15 +1934,6 @@ int __stdcall FsFindClose(HANDLE Hdl)
 	return 0;
 }
 
-int __stdcall FsInit(int PluginNr,tProgressProc pProgressProc,tLogProc pLogProc,tRequestProc pRequestProc)
-{
-	PluginNumber=PluginNr;
-	ProgressProc=pProgressProc;
-    LogProc=pLogProc;
-    RequestProc=pRequestProc;
-	return 0;
-}
-
 int __stdcall FsInitW(int PluginNr,tProgressProcW pProgressProcW,tLogProcW pLogProcW,tRequestProcW pRequestProcW)
 {
 	PluginNumber=PluginNr;
@@ -2023,21 +1993,16 @@ HRESULT DisConnectIfNeeded()
 		return E_FAIL;
 }
 
-BOOL __stdcall FsDisconnect(char* DisconnectRoot)
+BOOL __stdcall FsDisconnectW(WCHAR* DisconnectRoot)
 {
 	AppleMdResetSessions();
 	DisConnectIfNeeded();
-	char buf1[MAX_PATH];
-	strlcpy(buf1,"DISCONNECT ",MAX_PATH);
-	strlcat(buf1,DisconnectRoot,MAX_PATH);
-	LogProc(PluginNumber,MSGTYPE_DISCONNECT,buf1);
+	WCHAR buf1[MAX_PATH];
+	wcslcpy(buf1,L"DISCONNECT ",MAX_PATH);
+	if (DisconnectRoot)
+		wcslcat(buf1,DisconnectRoot,MAX_PATH);
+	LogProcT(PluginNumber,MSGTYPE_DISCONNECT,buf1);
 	return TRUE;
-}
-
-BOOL __stdcall FsMkDir(char* Path)
-{
-	WCHAR PathW[wdirtypemax];
-	return FsMkDirW(awfilenamecopy(PathW,Path));
 }
 
 #define ArraySize 128
@@ -2176,12 +2141,6 @@ BOOL __stdcall FsMkDirW(WCHAR* Path)
 	return result;
 }
 
-BOOL __stdcall FsDeleteFile(char* RemoteName)
-{
-	WCHAR RemoteNameW[wdirtypemax];
-	return FsDeleteFileW(awfilenamecopy(RemoteNameW,RemoteName));
-}
-
 BOOL __stdcall FsDeleteFileW(WCHAR* RemoteName)
 {
 	if (RemoteName[0]!='\\')
@@ -2261,23 +2220,11 @@ BOOL __stdcall FsDeleteFileW(WCHAR* RemoteName)
 	return result;
 }
 
-BOOL __stdcall FsRemoveDir(char* RemoteName)
-{
-	WCHAR RemoteNameW[wdirtypemax];
-	return FsRemoveDirW(awfilenamecopy(RemoteNameW,RemoteName));
-}
-
 BOOL __stdcall FsRemoveDirW(WCHAR* RemoteName)
 {
 	if (RemoteName[0]!='\\')
 		return false;
 	return FsDeleteFileW(RemoteName);
-}
-
-int __stdcall FsRenMovFile(char* OldName,char* NewName,BOOL Move,BOOL OverWrite,RemoteInfoStruct* ri)
-{
-	WCHAR NewNameW[wdirtypemax],OldNameW[wdirtypemax];
-	return FsRenMovFileW(awfilenamecopy(OldNameW,OldName),awfilenamecopy(NewNameW,NewName),Move,OverWrite,ri);
 }
 
 int __stdcall FsRenMovFileW(WCHAR* OldName,WCHAR* NewName,BOOL Move,BOOL OverWrite,RemoteInfoStruct* ri)
@@ -2475,20 +2422,6 @@ int __stdcall FsRenMovFileW(WCHAR* OldName,WCHAR* NewName,BOOL Move,BOOL OverWri
 	return result;
 }
 
-int __stdcall FsGetFile(char* RemoteName,char* LocalName,int CopyFlags,RemoteInfoStruct* ri)
-{
-	WCHAR RemoteNameW[wdirtypemax],LocalNameW[wdirtypemax],OldLocalNameW[wdirtypemax];
-	awfilenamecopy(RemoteNameW,RemoteName);
-	awfilenamecopy(LocalNameW,LocalName);
-	wcslcpy(OldLocalNameW,LocalNameW,wdirtypemax-1);
-	int ret=FsGetFileW(RemoteNameW,LocalNameW,CopyFlags,ri);
-	// A conversion may cause a name change
-	if (ret==0 && wcscmp(LocalNameW,OldLocalNameW)!=0) {
-		wafilenamecopy(LocalName,LocalNameW);
-	}
-	return ret;
-}
-
 int __stdcall FsGetFileW(WCHAR* RemoteName,WCHAR* LocalName,int CopyFlags,RemoteInfoStruct* ri)
 {
     int err;
@@ -2633,20 +2566,6 @@ int __stdcall FsGetFileW(WCHAR* RemoteName,WCHAR* LocalName,int CopyFlags,Remote
 	SetCancelDevice(NULL);
 	UnlockPlugin();
 	return result;
-}
-
-int __stdcall FsPutFile(char* LocalName,char* RemoteName,int CopyFlags)
-{
-	WCHAR RemoteNameW[wdirtypemax],LocalNameW[wdirtypemax],OldRemoteNameW[wdirtypemax];
-	awfilenamecopy(LocalNameW,LocalName);
-	awfilenamecopy(RemoteNameW,RemoteName);
-	wcslcpy(OldRemoteNameW,RemoteNameW,wdirtypemax-1);
-	int ret=FsPutFileW(LocalNameW,RemoteNameW,CopyFlags);
-	// A conversion may cause a name change
-	if (ret==0 && wcscmp(RemoteNameW,OldRemoteNameW)!=0) {
-		wafilenamecopy(RemoteName,RemoteNameW);
-	}
-	return ret;
 }
 
 typedef struct _ExtensionMap
@@ -3197,15 +3116,8 @@ int __stdcall FsPutFileW(WCHAR* LocalName,WCHAR* RemoteName,int CopyFlags)
 	return result;
 }
 
-int __stdcall FsExecuteFile(HWND MainWin,char* RemoteName,char* Verb)
-{
-	WCHAR RemoteNameW[wdirtypemax],VerbW[wdirtypemax];
-	return FsExecuteFileW(MainWin,awfilenamecopy(RemoteNameW,RemoteName),awfilenamecopy(VerbW,Verb));
-}
-
 int __stdcall FsExecuteFileW(HWND MainWin,WCHAR* RemoteName,WCHAR* Verb)
 {
-	char RemoteNameA[wdirtypemax];
 	if (RemoteName[0]!='\\')
 		return FS_EXEC_ERROR;
 	
@@ -3246,7 +3158,10 @@ int __stdcall FsExecuteFileW(HWND MainWin,WCHAR* RemoteName,WCHAR* Verb)
 			BOOL ok=EjectWpdDevice(pnpCopy[0]?pnpCopy:NULL);
 			DeviceEventReceived=true;
 			if (!ok)
-				LogProcT(PluginNumber,MSGTYPE_IMPORTANTERROR,L"Eject failed. Close Explorer/Phone Link and retry.");
+				LogProcT(PluginNumber,MSGTYPE_IMPORTANTERROR,
+					GetPluginUiLanguage()==1
+						? L"Извлечь не удалось. Закройте Проводник / Связь с телефоном и повторите."
+						: L"Eject failed. Close Explorer/Phone Link and retry.");
 			else
 				LogProcT(PluginNumber,MSGTYPE_DISCONNECT,L"EJECT");
 			return ok?FS_EXEC_OK:FS_EXEC_ERROR;
@@ -3255,11 +3170,16 @@ int __stdcall FsExecuteFileW(HWND MainWin,WCHAR* RemoteName,WCHAR* Verb)
 			ShowDeviceInfoBox(MainWin, RemoteName);
 			return FS_EXEC_OK;
 		}
-		WCHAR help[]=L"Supported: quote refresh | quote eject | quote info | quote reconnect";
-		MessageBoxW(MainWin,help,PLUGIN_DISPLAY_NAME_W,MB_ICONINFORMATION);
+		MessageBoxW(MainWin,
+			GetPluginUiLanguage()==1
+				? L"Команды: quote refresh | quote eject | quote info | quote reconnect"
+				: L"Supported: quote refresh | quote eject | quote info | quote reconnect",
+			PLUGIN_DISPLAY_NAME_W,MB_ICONINFORMATION);
 		return FS_EXEC_OK;
 	} else if (_wcsnicmp(Verb,L"chmod ",6)==0) {
-		MessageBox(MainWin,wafilenamecopy(RemoteNameA,Verb),"Chmod verb not supported!",MB_ICONEXCLAMATION);
+		MessageBoxW(MainWin,
+			GetPluginUiLanguage()==1 ? L"chmod не поддерживается." : L"Chmod is not supported.",
+			PLUGIN_DISPLAY_NAME_W,MB_ICONEXCLAMATION);
 		return FS_EXEC_ERROR;
 	} else
 		return FS_EXEC_ERROR;

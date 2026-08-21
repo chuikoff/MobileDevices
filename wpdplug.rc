@@ -33,7 +33,7 @@ BEGIN
     DEFPUSHBUTTON   "OK",IDOK,263,180,50,14
 END
 
-IDD_PLUGINABOUT DIALOGEX 0, 0, 280, 128
+IDD_PLUGINABOUT DIALOGEX 0, 0, 280, 156
 STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "Mobile Devices"
 FONT 9, "Segoe UI", 400, 0, 0x1
@@ -42,8 +42,10 @@ BEGIN
     LTEXT           "Mobile Devices",IDC_ABOUT_TITLE,52,12,216,12
     LTEXT           "Version",IDC_ABOUT_VER,52,26,216,10
     LTEXT           "desc",IDC_ABOUT_DESC,12,50,256,28
-    CONTROL         "<a>GitHub</a>",IDC_GITHUB_LINK,"SysLink",WS_TABSTOP,12,84,256,16
-    DEFPUSHBUTTON   "OK",IDOK,223,108,50,14
+    CONTROL         "<a>GitHub</a>",IDC_GITHUB_LINK,"SysLink",WS_TABSTOP,12,82,256,16
+    LTEXT           "Language",IDC_LANG_LABEL,12,108,80,10
+    COMBOBOX        IDC_LANGUAGE,96,106,172,80,CBS_DROPDOWNLIST | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP
+    DEFPUSHBUTTON   "OK",IDOK,223,136,50,14
 END
 
 
@@ -103,8 +105,8 @@ IDI_IPHONE              ICON                    "ICONIPHONE.ICO"
 //
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 0,9,9,0
- PRODUCTVERSION 0,9,9,0
+ FILEVERSION 0,9,10,0
+ PRODUCTVERSION 0,9,10,0
  FILEFLAGSMASK 0x3fL
 #ifdef _DEBUG
  FILEFLAGS 0x1L
@@ -121,12 +123,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "Ghisler Software GmbH"
             VALUE "FileDescription", "Mobile Devices - Total Commander Android/iPhone plugin (modified from MediaAudio2)"
-            VALUE "FileVersion", "0.9.9.0"
+            VALUE "FileVersion", "0.9.10.0"
             VALUE "InternalName", "mobiledevices"
             VALUE "LegalCopyright", "Copyright (C) 2011-2018 Christian Ghisler, Ghisler Software GmbH. Modifications (C) 2026. BSD-3-Clause."
             VALUE "OriginalFilename", "mobiledevices.wfx"
             VALUE "ProductName", "Mobile Devices"
-            VALUE "ProductVersion", "0.9.9.0"
+            VALUE "ProductVersion", "0.9.10.0"
         END
     END
     BLOCK "VarFileInfo"
