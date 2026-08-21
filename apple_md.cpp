@@ -372,6 +372,23 @@ static void WideToUtf8(LPCWSTR w, char* u, int u8cch)
 	u[0]=0;
 }
 
+/* AFCKeyValueRead returns aliases inside dict. AFCKeyValueClose frees them.
+   Do not free(k)/free(v) — Apple's MobileDevice.dll will crash. */
+static void AfcDictClose(afc_dictionary dict)
+{
+	if (dict && pAFCKeyValueClose)
+		pAFCKeyValueClose(dict);
+}
+
+static BOOL AfcDictNext(afc_dictionary dict, char** k, char** v)
+{
+	if (k) *k=NULL;
+	if (v) *v=NULL;
+	if (!dict || !pAFCKeyValueRead || !k || !v)
+		return FALSE;
+	return pAFCKeyValueRead(dict, k, v)==0 && *k!=NULL;
+}
+
 static BOOL PathLooksLikeDir(afc_connection conn, const char* path)
 {
 	if (!pAFCFileInfoOpen || !pAFCKeyValueRead)
@@ -382,7 +399,7 @@ static BOOL PathLooksLikeDir(afc_connection conn, const char* path)
 	BOOL dir=FALSE;
 	for (;;) {
 		char *k=NULL, *v=NULL;
-		if (pAFCKeyValueRead(dict, &k, &v)!=0 || !k)
+		if (!AfcDictNext(dict, &k, &v))
 			break;
 		if (v && (!strcmp(k, "st_ifmt") || !strcmp(k, "st_nlink"))) {
 			if (v && strstr(v, "DIR"))
@@ -391,8 +408,7 @@ static BOOL PathLooksLikeDir(afc_connection conn, const char* path)
 		if (v && !strcmp(k, "st_ifmt") && strstr(v, "S_IFDIR"))
 			dir=TRUE;
 	}
-	if (pAFCKeyValueClose)
-		pAFCKeyValueClose(dict);
+	AfcDictClose(dict);
 	return dir;
 }
 
@@ -470,14 +486,14 @@ static void FillFindFromAfc(afc_connection conn, const char* dirPath, const char
 	char full[1024];
 	if (AfcJoinChild(full, countof(full), dirPath, name, FALSE)<0)
 		return;
-	if (!pAFCFileInfoOpen)
+	if (!pAFCFileInfoOpen || !pAFCKeyValueRead)
 		return;
 	afc_dictionary dict=NULL;
 	if (pAFCFileInfoOpen(conn, full, &dict)!=0 || !dict)
 		return;
 	for (;;) {
 		char *k=NULL, *v=NULL;
-		if (pAFCKeyValueRead(dict, &k, &v)!=0 || !k)
+		if (!AfcDictNext(dict, &k, &v))
 			break;
 		if (!v)
 			continue;
@@ -497,8 +513,7 @@ static void FillFindFromAfc(afc_connection conn, const char* dirPath, const char
 			}
 		}
 	}
-	if (pAFCKeyValueClose)
-		pAFCKeyValueClose(dict);
+	AfcDictClose(dict);
 	if (fd->dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
 		fd->nFileSizeHigh=0;
 		fd->nFileSizeLow=0;
@@ -1141,7 +1156,7 @@ BOOL AppleMdFillInfo(LPCWSTR deviceName, PluginDeviceInfo* info)
 		if (pAFCDeviceInfoOpen(p->afc, &dict)==0 && dict) {
 			for (;;) {
 				char *k=NULL, *v=NULL;
-				if (pAFCKeyValueRead(dict, &k, &v)!=0 || !k)
+				if (!AfcDictNext(dict, &k, &v))
 					break;
 				if (!v)
 					continue;
@@ -1150,8 +1165,7 @@ BOOL AppleMdFillInfo(LPCWSTR deviceName, PluginDeviceInfo* info)
 				else if (!strcmp(k, "FSFreeBytes"))
 					freeb=_strtoui64(v, NULL, 10);
 			}
-			if (pAFCKeyValueClose)
-				pAFCKeyValueClose(dict);
+			AfcDictClose(dict);
 		}
 	}
 	if (!cap && !freeb) {
@@ -1634,8 +1648,7 @@ static BOOL AfcHasDir(afc_connection conn, const char* name)
 	afc_dictionary dict=NULL;
 	if (pAFCFileInfoOpen(conn, name, &dict)!=0 || !dict)
 		return FALSE;
-	if (pAFCKeyValueClose)
-		pAFCKeyValueClose(dict);
+	AfcDictClose(dict);
 	return TRUE;
 }
 
@@ -2275,8 +2288,7 @@ int AppleMdPutFile(LPCWSTR deviceName, LPCWSTR relPath, LPCWSTR localPath, BOOL 
 	if (!overwrite && pAFCFileInfoOpen) {
 		afc_dictionary dict=NULL;
 		if (pAFCFileInfoOpen(conn, afcPath, &dict)==0 && dict) {
-			if (pAFCKeyValueClose)
-				pAFCKeyValueClose(dict);
+			AfcDictClose(dict);
 			AppleUnlock();
 			return FS_FILE_EXISTS;
 		}
