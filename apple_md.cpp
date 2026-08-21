@@ -1158,10 +1158,13 @@ BOOL AppleMdFillInfo(LPCWSTR deviceName, PluginDeviceInfo* info)
 
 static void ToUtf8Slash(LPCWSTR w, char* u, int cch)
 {
+	if (!u || cch<=0)
+		return;
 	WideToUtf8(w ? w : L"", u, cch);
-	for (char* q=u; *q; q++) {
-		if (*q=='\\')
-			*q='/';
+	u[cch-1]=0;
+	for (int i=0; i<cch-1 && u[i]; i++) {
+		if (u[i]=='\\')
+			u[i]='/';
 	}
 }
 
