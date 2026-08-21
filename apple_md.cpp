@@ -370,6 +370,17 @@ static BOOL PathLooksLikeDir(afc_connection conn, const char* path)
 	return dir;
 }
 
+static int AfcJoinChild(char* dst, size_t dstcch, const char* dir, const char* name, BOOL slashRoot)
+{
+	if (!dst || dstcch==0 || !name)
+		return -1;
+	if (dir && dir[0] && strcmp(dir, "/")!=0 && strcmp(dir, ".")!=0)
+		return sprintf_s(dst, dstcch, "%s/%s", dir, name);
+	if (slashRoot)
+		return sprintf_s(dst, dstcch, "/%s", name);
+	return sprintf_s(dst, dstcch, "%s", name);
+}
+
 static void FillFindFromAfc(afc_connection conn, const char* dirPath, const char* name, WIN32_FIND_DATAW* fd)
 {
 	memset(fd, 0, sizeof(*fd));
@@ -378,10 +389,8 @@ static void FillFindFromAfc(afc_connection conn, const char* dirPath, const char
 	fd->ftLastWriteTime.dwHighDateTime=0xFFFFFFFF;
 	fd->ftLastWriteTime.dwLowDateTime=0xFFFFFFFE;
 	char full[1024];
-	if (dirPath && dirPath[0] && strcmp(dirPath, "/") && strcmp(dirPath, "."))
-		sprintf_s(full, "%s/%s", dirPath, name);
-	else
-		sprintf_s(full, "%s", name);
+	if (AfcJoinChild(full, countof(full), dirPath, name, FALSE)<0)
+		return;
 	if (!pAFCFileInfoOpen)
 		return;
 	afc_dictionary dict=NULL;
@@ -632,7 +641,7 @@ static void OnAppleNotify(am_device_notification_callback_info* info, void*)
 		for (int i=0;i<g_nphones;i++) {
 			if (!_wcsicmp(g_phones[i].name, p->name)) {
 				WCHAR tmp[140];
-				swprintf_s(tmp, L"%s (%d)", p->name, i+2);
+				swprintf_s(tmp, countof(tmp), L"%s (%d)", p->name, i+2);
 				wcslcpy(p->name, tmp, 128);
 				break;
 			}
@@ -718,13 +727,13 @@ static BOOL ApplePkgLooksValid(LPCWSTR pkg)
 {
 #ifdef _WIN64
 	WCHAR a[MAX_PATH], b[MAX_PATH];
-	swprintf_s(a, L"%s\\MobileDevice.dll", pkg);
-	swprintf_s(b, L"%s\\CoreFoundation.dll", pkg);
+	swprintf_s(a, countof(a), L"%s\\MobileDevice.dll", pkg);
+	swprintf_s(b, countof(b), L"%s\\CoreFoundation.dll", pkg);
 	return FileExistsW(a) && FileExistsW(b);
 #else
 	WCHAR a[MAX_PATH], b[MAX_PATH];
-	swprintf_s(a, L"%s\\AMDS32\\MobileDevice.dll", pkg);
-	swprintf_s(b, L"%s\\VFS\\ProgramFilesCommonX86\\Apple\\Apple Application Support\\CoreFoundation.dll", pkg);
+	swprintf_s(a, countof(a), L"%s\\AMDS32\\MobileDevice.dll", pkg);
+	swprintf_s(b, countof(b), L"%s\\VFS\\ProgramFilesCommonX86\\Apple\\Apple Application Support\\CoreFoundation.dll", pkg);
 	return FileExistsW(a) && FileExistsW(b);
 #endif
 }
@@ -736,9 +745,9 @@ static BOOL FindApplePackage(WCHAR* pkg, int cch)
 	WCHAR pf[MAX_PATH], apps[MAX_PATH];
 	if (!GetEnvironmentVariableW(L"ProgramFiles", pf, MAX_PATH))
 		return FALSE;
-	swprintf_s(apps, L"%s\\WindowsApps", pf);
+	swprintf_s(apps, countof(apps), L"%s\\WindowsApps", pf);
 	WCHAR spec[MAX_PATH];
-	swprintf_s(spec, L"%s\\AppleInc.AppleDevices_*", apps);
+	swprintf_s(spec, countof(spec), L"%s\\AppleInc.AppleDevices_*", apps);
 	WIN32_FIND_DATAW fd;
 	HANDLE h=FindFirstFileW(spec, &fd);
 	if (h==INVALID_HANDLE_VALUE)
@@ -762,8 +771,8 @@ static BOOL FindApplePackage(WCHAR* pkg, int cch)
 static BOOL CopyOneDll(LPCWSTR srcDir, LPCWSTR name, LPCWSTR dstDir)
 {
 	WCHAR src[MAX_PATH], dst[MAX_PATH];
-	swprintf_s(src, L"%s\\%s", srcDir, name);
-	swprintf_s(dst, L"%s\\%s", dstDir, name);
+	swprintf_s(src, countof(src), L"%s\\%s", srcDir, name);
+	swprintf_s(dst, countof(dst), L"%s\\%s", dstDir, name);
 	if (!FileExistsW(src))
 		return FALSE;
 	WIN32_FILE_ATTRIBUTE_DATA sa, da;
@@ -799,17 +808,17 @@ static BOOL StageAppleDlls(LPCWSTR pkg, WCHAR* dest, int destcch)
 		CopyOneDll(pkg, names[i], dest);
 #else
 	WCHAR aas[MAX_PATH], amds32[MAX_PATH];
-	swprintf_s(aas, L"%s\\VFS\\ProgramFilesCommonX86\\Apple\\Apple Application Support", pkg);
-	swprintf_s(amds32, L"%s\\AMDS32", pkg);
+	swprintf_s(aas, countof(aas), L"%s\\VFS\\ProgramFilesCommonX86\\Apple\\Apple Application Support", pkg);
+	swprintf_s(amds32, countof(amds32), L"%s\\AMDS32", pkg);
 	for (int i=0;i<(int)(sizeof(names)/sizeof(names[0]));i++) {
 		if (!CopyOneDll(aas, names[i], dest))
 			CopyOneDll(amds32, names[i], dest);
 	}
 #endif
 	WCHAR md[MAX_PATH];
-	swprintf_s(md, L"%s\\MobileDevice.dll", dest);
+	swprintf_s(md, countof(md), L"%s\\MobileDevice.dll", dest);
 	WCHAR cf[MAX_PATH];
-	swprintf_s(cf, L"%s\\CoreFoundation.dll", dest);
+	swprintf_s(cf, countof(cf), L"%s\\CoreFoundation.dll", dest);
 	return FileExistsW(md) && FileExistsW(cf);
 }
 
@@ -911,15 +920,15 @@ static BOOL LoadAppleDlls()
 
 	WCHAR path[MAX_PATH];
 	if (dest[0]) {
-		swprintf_s(path, L"%s\\CoreFoundation.dll", dest);
+		swprintf_s(path, countof(path), L"%s\\CoreFoundation.dll", dest);
 		g_cf=LoadLibraryExW(path, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
-		swprintf_s(path, L"%s\\MobileDevice.dll", dest);
+		swprintf_s(path, countof(path), L"%s\\MobileDevice.dll", dest);
 		g_md=LoadLibraryExW(path, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
 	}
 	if (!g_md) {
 		WCHAR pf[MAX_PATH], mds[MAX_PATH];
 		GetEnvironmentVariableW(L"ProgramFiles", pf, MAX_PATH);
-		swprintf_s(mds, L"%s\\Common Files\\Apple\\Mobile Device Support\\iTunesMobileDevice.dll", pf);
+		swprintf_s(mds, countof(mds), L"%s\\Common Files\\Apple\\Mobile Device Support\\iTunesMobileDevice.dll", pf);
 		if (FileExistsW(mds))
 			g_md=LoadLibraryExW(mds, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
 	}
@@ -1018,13 +1027,13 @@ BOOL AppleMdFillInfo(LPCWSTR deviceName, PluginDeviceInfo* info)
 	wcslcpy(info->manufacturer, L"Apple", 128);
 	wcslcpy(info->model, p->product[0] ? p->product : p->name, 128);
 	if (p->ios[0] && p->build[0])
-		swprintf_s(info->firmware, L"%s (%s)", p->ios, p->build);
+		swprintf_s(info->firmware, countof(info->firmware), L"%s (%s)", p->ios, p->build);
 	else if (p->ios[0])
 		wcslcpy(info->firmware, p->ios, 128);
 	wcslcpy(info->protocol, L"Apple Mobile Device (AFC)", 80);
 	wcslcpy(info->os, L"iOS", 40);
 	if (p->ios[0])
-		swprintf_s(info->os, L"iOS %s", p->ios);
+		swprintf_s(info->os, countof(info->os), L"iOS %s", p->ios);
 
 	EnsureLockdown(p);
 	int bat=CopyValueInt(p->dev, NULL, "BatteryCurrentCapacity");
@@ -1361,7 +1370,7 @@ static void AddAppFromDict(ApplePhone* p, CFTypeRef app)
 		}
 		if (!clash)
 			break;
-		swprintf_s(unique, L"%s (%d)", name, extra++);
+		swprintf_s(unique, countof(unique), L"%s (%d)", name, extra++);
 	}
 	AppleApp* a=&p->apps[p->napps++];
 	memset(a, 0, sizeof(*a));
@@ -1484,14 +1493,15 @@ static BOOL HouseArrestSend(int sock, const char* command, const char* bundle)
 			return TRUE;
 	}
 	char xml[1024];
-	sprintf_s(xml,
+	if (sprintf_s(xml, countof(xml),
 		"<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
 		"<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" "
 		"\"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">"
 		"<plist version=\"1.0\"><dict>"
 		"<key>Command</key><string>%s</string>"
 		"<key>Identifier</key><string>%s</string>"
-		"</dict></plist>", command, bundle);
+		"</dict></plist>", command, bundle)<0)
+		return FALSE;
 	return PlistSendXml(sock, xml);
 }
 
@@ -2080,10 +2090,8 @@ static BOOL AfcDeleteTree(afc_connection conn, const char* path)
 				if (!strcmp(name, ".") || !strcmp(name, ".."))
 					continue;
 				char child[1024];
-				if (path[0] && strcmp(path, "/")!=0)
-					sprintf_s(child, "%s/%s", path, name);
-				else
-					sprintf_s(child, "/%s", name);
+				if (AfcJoinChild(child, countof(child), path, name, TRUE)<0)
+					continue;
 				AfcDeleteTree(conn, child);
 			}
 			if (pAFCDirectoryClose)
