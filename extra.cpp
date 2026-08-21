@@ -37,12 +37,6 @@ int __stdcall FsGetBackgroundFlags(void)
 	return BG_DOWNLOAD | BG_UPLOAD;
 }
 
-void __stdcall FsStatusInfo(char* RemoteDir,int InfoStartEnd,int InfoOperation)
-{
-	WCHAR dirW[wdirtypemax];
-	FsStatusInfoW(awfilenamecopy(dirW,RemoteDir),InfoStartEnd,InfoOperation);
-}
-
 void __stdcall FsStatusInfoW(WCHAR* RemoteDir,int InfoStartEnd,int InfoOperation)
 {
 	UNREFERENCED_PARAMETER(RemoteDir);
@@ -166,19 +160,6 @@ int __stdcall FsContentGetSupportedField(int FieldIndex,char* FieldName,char* Un
 	default:
 		return ft_stringw;
 	}
-}
-
-int __stdcall FsContentGetValue(char* FileName,int FieldIndex,int UnitIndex,void* FieldValue,int maxlen,int flags)
-{
-	WCHAR nameW[wdirtypemax];
-	int r=FsContentGetValueW(awfilenamecopy(nameW,FileName),FieldIndex,UnitIndex,FieldValue,maxlen,flags);
-	if (r==ft_stringw) {
-		WCHAR tmp[1024];
-		wcslcpy(tmp,(WCHAR*)FieldValue,1024);
-		walcopy((char*)FieldValue,tmp,maxlen>0?maxlen-1:0);
-		return ft_string;
-	}
-	return r;
 }
 
 int __stdcall FsContentGetValueW(WCHAR* FileName,int FieldIndex,int UnitIndex,void* FieldValue,int maxlen,int flags)
@@ -305,26 +286,10 @@ int __stdcall FsContentGetValueW(WCHAR* FileName,int FieldIndex,int UnitIndex,vo
 	return result;
 }
 
-void __stdcall FsContentStopGetValue(char* FileName)
-{
-	UNREFERENCED_PARAMETER(FileName);
-	SetContentStop(TRUE);
-}
-
 void __stdcall FsContentStopGetValueW(WCHAR* FileName)
 {
 	UNREFERENCED_PARAMETER(FileName);
 	SetContentStop(TRUE);
-}
-
-BOOL __stdcall FsContentGetDefaultView(char* ViewContents,char* ViewHeaders,char* ViewWidths,char* ViewOptions,int maxlen)
-{
-	UNREFERENCED_PARAMETER(ViewContents);
-	UNREFERENCED_PARAMETER(ViewHeaders);
-	UNREFERENCED_PARAMETER(ViewWidths);
-	UNREFERENCED_PARAMETER(ViewOptions);
-	UNREFERENCED_PARAMETER(maxlen);
-	return FALSE;
 }
 
 BOOL __stdcall FsContentGetDefaultViewW(WCHAR* ViewContents,WCHAR* ViewHeaders,WCHAR* ViewWidths,WCHAR* ViewOptions,int maxlen)
@@ -413,12 +378,6 @@ static HBITMAP ScaleBitmapKeepAspect(Gdiplus::Bitmap* src, int maxW, int maxH)
 	return hb;
 }
 
-int __stdcall FsGetPreviewBitmap(char* RemoteName,int width,int height,HBITMAP* ReturnedBitmap)
-{
-	WCHAR nameW[wdirtypemax];
-	return FsGetPreviewBitmapW(awfilenamecopy(nameW,RemoteName),width,height,ReturnedBitmap);
-}
-
 int __stdcall FsGetPreviewBitmapW(WCHAR* RemoteName,int width,int height,HBITMAP* ReturnedBitmap)
 {
 	if (!ReturnedBitmap || !RemoteName || RemoteName[0]!='\\')
@@ -498,12 +457,6 @@ static int LoadPluginIcon(int id, int ExtractFlags, HICON* TheIcon)
 	if (!*TheIcon)
 		return FS_ICON_USEDEFAULT;
 	return FS_ICON_EXTRACTED_DESTROY;
-}
-
-int __stdcall FsExtractCustomIcon(char* RemoteName,int ExtractFlags,HICON* TheIcon)
-{
-	WCHAR nameW[wdirtypemax];
-	return FsExtractCustomIconW(awfilenamecopy(nameW,RemoteName),ExtractFlags,TheIcon);
 }
 
 int __stdcall FsExtractCustomIconW(WCHAR* RemoteName,int ExtractFlags,HICON* TheIcon)

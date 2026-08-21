@@ -1,4 +1,4 @@
-Mobile Devices plugin v0.9.11
+Mobile Devices plugin v0.9.12
 =======================
 Modified from Windows Media Audio 2 (wpdplug) by Christian Ghisler.
 
@@ -73,4 +73,4 @@ Features
 
 Alt+Enter on the plugin shows version, GitHub and language (English / Russian).
 Alt+Enter on a device shows only device information.
-The plugin uses Unicode internally; ANSI exports remain for Total Commander.
+Unicode plugin (FsInitW). Requires Total Commander 7.50 or later.
