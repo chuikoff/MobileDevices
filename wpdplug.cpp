@@ -1694,6 +1694,17 @@ void PopulateFindDataW(PWSTR szObject,pLastFindStuct lf,WIN32_FIND_DATAW *FindDa
 	}
 }
 
+HANDLE __stdcall FsFindFirst(char* Path,WIN32_FIND_DATA *FindData)
+{
+	WCHAR PathW[wdirtypemax];
+	WIN32_FIND_DATAW FindDataW;
+	memset(&FindDataW,0,sizeof(FindDataW));
+	HANDLE h=FsFindFirstW(awfilenamecopy(PathW,Path),&FindDataW);
+	if (h!=INVALID_HANDLE_VALUE)
+		copyfinddatawa(FindData,&FindDataW);
+	return h;
+}
+
 HANDLE __stdcall FsFindFirstW(WCHAR* Path,WIN32_FIND_DATAW *FindData)
 {
 	pLastFindStuct lf;
@@ -1838,6 +1849,16 @@ HANDLE __stdcall FsFindFirstW(WCHAR* Path,WIN32_FIND_DATAW *FindData)
 	return INVALID_HANDLE_VALUE;
 }
 
+BOOL __stdcall FsFindNext(HANDLE Hdl,WIN32_FIND_DATA *FindData)
+{
+	WIN32_FIND_DATAW FindDataW;
+	memset(&FindDataW,0,sizeof(FindDataW));
+	if (!FsFindNextW(Hdl,&FindDataW))
+		return false;
+	copyfinddatawa(FindData,&FindDataW);
+	return true;
+}
+
 BOOL __stdcall FsFindNextW(HANDLE Hdl,WIN32_FIND_DATAW *FindData)
 {
 	HRESULT hr;
@@ -1934,6 +1955,15 @@ int __stdcall FsFindClose(HANDLE Hdl)
 	return 0;
 }
 
+int __stdcall FsInit(int PluginNr,tProgressProc pProgressProc,tLogProc pLogProc,tRequestProc pRequestProc)
+{
+	PluginNumber=PluginNr;
+	ProgressProc=pProgressProc;
+	LogProc=pLogProc;
+	RequestProc=pRequestProc;
+	return 0;
+}
+
 int __stdcall FsInitW(int PluginNr,tProgressProcW pProgressProcW,tLogProcW pLogProcW,tRequestProcW pRequestProcW)
 {
 	PluginNumber=PluginNr;
@@ -1991,6 +2021,12 @@ HRESULT DisConnectIfNeeded()
 		return S_OK;
 	} else
 		return E_FAIL;
+}
+
+BOOL __stdcall FsDisconnect(char* DisconnectRoot)
+{
+	WCHAR w[MAX_PATH];
+	return FsDisconnectW(awfilenamecopy(w, DisconnectRoot ? DisconnectRoot : ""));
 }
 
 BOOL __stdcall FsDisconnectW(WCHAR* DisconnectRoot)
@@ -2063,6 +2099,12 @@ int NameExistsInEnum(IEnumPortableDeviceObjectIDs* pEnumObjectIDs,PWSTR pSearchN
 	} while (cFetched==ArraySize);
 	SAFE_RELEASE(pPropertiesToRead);
 	return match;
+}
+
+BOOL __stdcall FsMkDir(char* Path)
+{
+	WCHAR PathW[wdirtypemax];
+	return FsMkDirW(awfilenamecopy(PathW,Path));
 }
 
 BOOL __stdcall FsMkDirW(WCHAR* Path)
@@ -2139,6 +2181,12 @@ BOOL __stdcall FsMkDirW(WCHAR* Path)
 		}
 	}
 	return result;
+}
+
+BOOL __stdcall FsDeleteFile(char* RemoteName)
+{
+	WCHAR RemoteNameW[wdirtypemax];
+	return FsDeleteFileW(awfilenamecopy(RemoteNameW,RemoteName));
 }
 
 BOOL __stdcall FsDeleteFileW(WCHAR* RemoteName)
@@ -2220,11 +2268,23 @@ BOOL __stdcall FsDeleteFileW(WCHAR* RemoteName)
 	return result;
 }
 
+BOOL __stdcall FsRemoveDir(char* RemoteName)
+{
+	WCHAR RemoteNameW[wdirtypemax];
+	return FsRemoveDirW(awfilenamecopy(RemoteNameW,RemoteName));
+}
+
 BOOL __stdcall FsRemoveDirW(WCHAR* RemoteName)
 {
 	if (RemoteName[0]!='\\')
 		return false;
 	return FsDeleteFileW(RemoteName);
+}
+
+int __stdcall FsRenMovFile(char* OldName,char* NewName,BOOL Move,BOOL OverWrite,RemoteInfoStruct* ri)
+{
+	WCHAR NewNameW[wdirtypemax],OldNameW[wdirtypemax];
+	return FsRenMovFileW(awfilenamecopy(OldNameW,OldName),awfilenamecopy(NewNameW,NewName),Move,OverWrite,ri);
 }
 
 int __stdcall FsRenMovFileW(WCHAR* OldName,WCHAR* NewName,BOOL Move,BOOL OverWrite,RemoteInfoStruct* ri)
@@ -2420,6 +2480,18 @@ int __stdcall FsRenMovFileW(WCHAR* OldName,WCHAR* NewName,BOOL Move,BOOL OverWri
 		LogProcT(PluginNumber,MSGTYPE_OPERATIONCOMPLETE,buf1);
 	}
 	return result;
+}
+
+int __stdcall FsGetFile(char* RemoteName,char* LocalName,int CopyFlags,RemoteInfoStruct* ri)
+{
+	WCHAR RemoteNameW[wdirtypemax],LocalNameW[wdirtypemax],OldLocalNameW[wdirtypemax];
+	awfilenamecopy(RemoteNameW,RemoteName);
+	awfilenamecopy(LocalNameW,LocalName);
+	wcslcpy(OldLocalNameW,LocalNameW,wdirtypemax-1);
+	int ret=FsGetFileW(RemoteNameW,LocalNameW,CopyFlags,ri);
+	if (ret==0 && wcscmp(LocalNameW,OldLocalNameW)!=0)
+		wafilenamecopy(LocalName,LocalNameW);
+	return ret;
 }
 
 int __stdcall FsGetFileW(WCHAR* RemoteName,WCHAR* LocalName,int CopyFlags,RemoteInfoStruct* ri)
@@ -2664,6 +2736,18 @@ void GetFormatCodeFromFile(WCHAR* pszFile,const GUID** pFormat,const GUID** pCon
     }
     *pFormat=dwFormatCode;
 	*pContent=dwContentCode;
+}
+
+int __stdcall FsPutFile(char* LocalName,char* RemoteName,int CopyFlags)
+{
+	WCHAR RemoteNameW[wdirtypemax],LocalNameW[wdirtypemax],OldRemoteNameW[wdirtypemax];
+	awfilenamecopy(LocalNameW,LocalName);
+	awfilenamecopy(RemoteNameW,RemoteName);
+	wcslcpy(OldRemoteNameW,RemoteNameW,wdirtypemax-1);
+	int ret=FsPutFileW(LocalNameW,RemoteNameW,CopyFlags);
+	if (ret==0 && wcscmp(RemoteNameW,OldRemoteNameW)!=0)
+		wafilenamecopy(RemoteName,RemoteNameW);
+	return ret;
 }
 
 int __stdcall FsPutFileW(WCHAR* LocalName,WCHAR* RemoteName,int CopyFlags)
@@ -3114,6 +3198,12 @@ int __stdcall FsPutFileW(WCHAR* LocalName,WCHAR* RemoteName,int CopyFlags)
 	SetCancelDevice(NULL);
 	UnlockPlugin();
 	return result;
+}
+
+int __stdcall FsExecuteFile(HWND MainWin,char* RemoteName,char* Verb)
+{
+	WCHAR RemoteNameW[wdirtypemax],VerbW[wdirtypemax];
+	return FsExecuteFileW(MainWin,awfilenamecopy(RemoteNameW,RemoteName),awfilenamecopy(VerbW,Verb));
 }
 
 int __stdcall FsExecuteFileW(HWND MainWin,WCHAR* RemoteName,WCHAR* Verb)
