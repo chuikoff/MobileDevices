@@ -1516,32 +1516,35 @@ static BOOL RefreshApps(ApplePhone* p)
 	}
 	closesocket(sock);
 
-	AppleApp raw[APPLE_MAX_APPS];
-	int nraw=p->napps;
-	if (nraw>APPLE_MAX_APPS)
-		nraw=APPLE_MAX_APPS;
-	memcpy(raw, p->apps, nraw*sizeof(AppleApp));
-	p->napps=0;
-	int flagged=0;
-	for (int i=0;i<nraw;i++) {
-		if (raw[i].sharing || raw[i].inplace)
-			flagged++;
-	}
-	if (flagged>0) {
+	AppleApp* raw=(AppleApp*)calloc(APPLE_MAX_APPS, sizeof(AppleApp));
+	if (raw) {
+		int nraw=p->napps;
+		if (nraw>APPLE_MAX_APPS)
+			nraw=APPLE_MAX_APPS;
+		memcpy(raw, p->apps, nraw*sizeof(AppleApp));
+		p->napps=0;
+		int flagged=0;
 		for (int i=0;i<nraw;i++) {
 			if (raw[i].sharing || raw[i].inplace)
-				p->apps[p->napps++]=raw[i];
+				flagged++;
 		}
-	} else {
-		for (int i=0;i<nraw && p->napps<APPLE_MAX_APPS;i++) {
-			afc_connection c=NULL;
-			int s=0;
-			if (AppDocumentsOpen(p, raw[i].bundle, &c, &s)) {
-				if (c && pAFCConnectionClose)
-					pAFCConnectionClose(c);
-				p->apps[p->napps++]=raw[i];
+		if (flagged>0) {
+			for (int i=0;i<nraw;i++) {
+				if (raw[i].sharing || raw[i].inplace)
+					p->apps[p->napps++]=raw[i];
+			}
+		} else {
+			for (int i=0;i<nraw && p->napps<APPLE_MAX_APPS;i++) {
+				afc_connection c=NULL;
+				int s=0;
+				if (AppDocumentsOpen(p, raw[i].bundle, &c, &s)) {
+					if (c && pAFCConnectionClose)
+						pAFCConnectionClose(c);
+					p->apps[p->napps++]=raw[i];
+				}
 			}
 		}
+		free(raw);
 	}
 	if (p->napps>1)
 		qsort(p->apps, p->napps, sizeof(p->apps[0]), CmpApps);
