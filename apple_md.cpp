@@ -370,15 +370,68 @@ static BOOL PathLooksLikeDir(afc_connection conn, const char* path)
 	return dir;
 }
 
+/* No sprintf_s/strcpy_s: those abort via invalid_parameter_handler on overflow. */
+static BOOL AfcCopyStr(char* dst, size_t dstcch, const char* src)
+{
+	if (!dst || dstcch==0)
+		return FALSE;
+	if (!src) {
+		dst[0]=0;
+		return TRUE;
+	}
+	size_t n=strlen(src);
+	if (n>=dstcch) {
+		dst[0]=0;
+		return FALSE;
+	}
+	memcpy(dst, src, n+1);
+	return TRUE;
+}
+
+static BOOL AfcJoinSlash(char* dst, size_t dstcch, const char* left, const char* right)
+{
+	if (!dst || dstcch==0)
+		return FALSE;
+	if (!left) left="";
+	if (!right) right="";
+	size_t nl=strlen(left), nr=strlen(right);
+	if (nl+1+nr>=dstcch) {
+		dst[0]=0;
+		return FALSE;
+	}
+	memcpy(dst, left, nl);
+	dst[nl]='/';
+	memcpy(dst+nl+1, right, nr+1);
+	return TRUE;
+}
+
+static BOOL AfcPrepend(char* dst, size_t dstcch, const char* prefix)
+{
+	if (!dst || dstcch==0 || !prefix)
+		return FALSE;
+	size_t pre=strlen(prefix);
+	size_t n=strlen(dst);
+	if (pre+n>=dstcch) {
+		dst[0]=0;
+		return FALSE;
+	}
+	memmove(dst+pre, dst, n+1);
+	memcpy(dst, prefix, pre);
+	return TRUE;
+}
+
 static int AfcJoinChild(char* dst, size_t dstcch, const char* dir, const char* name, BOOL slashRoot)
 {
 	if (!dst || dstcch==0 || !name)
 		return -1;
+	BOOL ok;
 	if (dir && dir[0] && strcmp(dir, "/")!=0 && strcmp(dir, ".")!=0)
-		return sprintf_s(dst, dstcch, "%s/%s", dir, name);
-	if (slashRoot)
-		return sprintf_s(dst, dstcch, "/%s", name);
-	return sprintf_s(dst, dstcch, "%s", name);
+		ok=AfcJoinSlash(dst, dstcch, dir, name);
+	else if (slashRoot)
+		ok=AfcJoinSlash(dst, dstcch, "", name);
+	else
+		ok=AfcCopyStr(dst, dstcch, name);
+	return ok ? (int)strlen(dst) : -1;
 }
 
 static void FillFindFromAfc(afc_connection conn, const char* dirPath, const char* name, WIN32_FIND_DATAW* fd)
@@ -1122,9 +1175,8 @@ static int ParseAppleRel(LPCWSTR rel, WCHAR* appOut, int appcch, char* afcOut, i
 		if (!slash || !slash[1])
 			return AR_PHOTOS;
 		ToUtf8Slash(slash+1, afcOut, afccch);
-		char tmp[1024];
-		strcpy_s(tmp, afcOut);
-		sprintf_s(afcOut, afccch, "DCIM/%s", tmp);
+		if (afcOut && afccch>0)
+			AfcPrepend(afcOut, (size_t)afccch, "DCIM/");
 		return AR_PHOTOS_REL;
 	}
 	if (_wcsicmp(first, L"DCIM")==0) {
@@ -1159,9 +1211,8 @@ static int ParseAppleRel(LPCWSTR rel, WCHAR* appOut, int appcch, char* afcOut, i
 		return AR_PANICS_REL;
 	}
 	ToUtf8Slash(p, afcOut, afccch);
-	char tmp[1024];
-	strcpy_s(tmp, afcOut);
-	sprintf_s(afcOut, afccch, "DCIM/%s", tmp);
+	if (afcOut && afccch>0)
+		AfcPrepend(afcOut, (size_t)afccch, "DCIM/");
 	return AR_PHOTOS_REL;
 }
 
@@ -1493,7 +1544,7 @@ static BOOL HouseArrestSend(int sock, const char* command, const char* bundle)
 			return TRUE;
 	}
 	char xml[1024];
-	if (sprintf_s(xml, countof(xml),
+	if (_snprintf_s(xml, countof(xml), _TRUNCATE,
 		"<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
 		"<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" "
 		"\"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">"
@@ -1793,20 +1844,22 @@ static BOOL EnsurePanicAfc(ApplePhone* p)
 
 static void JoinAfc(const char* prefix, const char* rel, char* out, int cch)
 {
+	if (!out || cch<=0)
+		return;
 	if (!rel || !rel[0] || !strcmp(rel, "/") || !strcmp(rel, ".")) {
 		if (prefix && prefix[0])
-			strcpy_s(out, cch, prefix);
+			AfcCopyStr(out, (size_t)cch, prefix);
 		else
 			out[0]=0;
 		return;
 	}
 	if (prefix && prefix[0]) {
 		if (prefix[0]=='/' && prefix[1]==0)
-			sprintf_s(out, cch, "/%s", rel);
+			AfcJoinSlash(out, (size_t)cch, "", rel);
 		else
-			sprintf_s(out, cch, "%s/%s", prefix, rel);
+			AfcJoinSlash(out, (size_t)cch, prefix, rel);
 	} else
-		strcpy_s(out, cch, rel);
+		AfcCopyStr(out, (size_t)cch, rel);
 }
 
 static BOOL ResolveAfc(ApplePhone* p, LPCWSTR rel, afc_connection* conn, char* path, int pathcch, BOOL forWrite)
