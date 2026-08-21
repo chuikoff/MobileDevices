@@ -692,76 +692,89 @@ static ApplePhone* FindPhoneByName(LPCWSTR name)
 
 static void OnAppleNotify(am_device_notification_callback_info* info, void*)
 {
+	/* Apple CFRunLoop thread. info->dev lifetime is Apple's and may already be invalid. */
 	if (!info || !info->dev)
 		return;
-	/* Must not block the CFRunLoop thread: StartService waits on it. */
+	am_device dev=info->dev;
+	unsigned int msg=info->msg;
+	/* Must not block this thread: StartService waits on the run loop. */
 	if (!AppleTryLock())
 		return;
-	if (info->msg==ADNCI_MSG_CONNECTED) {
-		if (g_nphones>=APPLE_MAX) {
-			AppleUnlock();
-			return;
-		}
-		for (int i=0;i<g_nphones;i++) {
-			if (g_phones[i].dev==info->dev) {
-				AppleUnlock();
-				return;
+	if (InterlockedCompareExchange(&g_loopStop, 0, 0)!=0) {
+		AppleUnlock();
+		return;
+	}
+	int slot=-1;
+	/* Do not add C++ objects with destructors in this __try: SEH will skip them. */
+	__try {
+		if (msg==ADNCI_MSG_CONNECTED && g_nphones<APPLE_MAX && pAMDeviceConnect) {
+			BOOL known=FALSE;
+			for (int i=0;i<g_nphones;i++) {
+				if (g_phones[i].dev==dev) {
+					known=TRUE;
+					break;
+				}
+			}
+			if (!known && pAMDeviceConnect(dev)==0) {
+				slot=g_nphones;
+				ApplePhone* p=&g_phones[slot];
+				memset(p, 0, sizeof(*p));
+				p->dev=dev;
+				CopyValue(dev, "DeviceName", p->name, 128);
+				CopyValue(dev, "UniqueDeviceID", p->udid, 80);
+				CopyValue(dev, "ProductVersion", p->ios, 40);
+				CopyValue(dev, "BuildVersion", p->build, 40);
+				CopyValue(dev, "ProductType", p->product, 40);
+				WCHAR dclass[40];
+				CopyValue(dev, "DeviceClass", dclass, 40);
+				BOOL isPhone=FALSE;
+				if (!p->product[0] && !dclass[0])
+					isPhone=TRUE;
+				else if (wcsstr(p->product, L"iPhone") || wcsstr(p->product, L"iPad") || wcsstr(p->product, L"iPod") ||
+					wcsstr(dclass, L"iPhone") || wcsstr(dclass, L"iPad") || wcsstr(dclass, L"iPod"))
+					isPhone=TRUE;
+				if (!isPhone) {
+					if (pAMDeviceDisconnect)
+						pAMDeviceDisconnect(dev);
+					memset(p, 0, sizeof(*p));
+					slot=-1;
+				} else {
+					if (!p->name[0]) {
+						if (dclass[0])
+							wcslcpy(p->name, dclass, 128);
+						else if (p->product[0])
+							wcslcpy(p->name, p->product, 128);
+						else
+							wcslcpy(p->name, L"iPhone", 128);
+					}
+					for (int i=0;i<g_nphones;i++) {
+						if (!_wcsicmp(g_phones[i].name, p->name)) {
+							WCHAR tmp[140];
+							swprintf_s(tmp, countof(tmp), L"%s (%d)", p->name, i+2);
+							wcslcpy(p->name, tmp, 128);
+							break;
+						}
+					}
+					if (pAMDeviceDisconnect)
+						pAMDeviceDisconnect(dev);
+					g_nphones++;
+					slot=-1;
+				}
+			}
+		} else if (msg==ADNCI_MSG_DISCONNECTED) {
+			for (int i=0;i<g_nphones;i++) {
+				if (g_phones[i].dev==dev) {
+					ClosePhone(&g_phones[i]);
+					g_phones[i]=g_phones[g_nphones-1];
+					memset(&g_phones[g_nphones-1], 0, sizeof(g_phones[0]));
+					g_nphones--;
+					break;
+				}
 			}
 		}
-		if (pAMDeviceConnect(info->dev)!=0) {
-			AppleUnlock();
-			return;
-		}
-		ApplePhone* p=&g_phones[g_nphones];
-		memset(p, 0, sizeof(*p));
-		p->dev=info->dev;
-		CopyValue(info->dev, "DeviceName", p->name, 128);
-		CopyValue(info->dev, "UniqueDeviceID", p->udid, 80);
-		CopyValue(info->dev, "ProductVersion", p->ios, 40);
-		CopyValue(info->dev, "BuildVersion", p->build, 40);
-		CopyValue(info->dev, "ProductType", p->product, 40);
-		WCHAR dclass[40];
-		CopyValue(info->dev, "DeviceClass", dclass, 40);
-		BOOL isPhone=FALSE;
-		if (!p->product[0] && !dclass[0])
-			isPhone=TRUE;
-		else if (wcsstr(p->product, L"iPhone") || wcsstr(p->product, L"iPad") || wcsstr(p->product, L"iPod") ||
-			wcsstr(dclass, L"iPhone") || wcsstr(dclass, L"iPad") || wcsstr(dclass, L"iPod"))
-			isPhone=TRUE;
-		if (!isPhone) {
-			pAMDeviceDisconnect(info->dev);
-			memset(p, 0, sizeof(*p));
-			AppleUnlock();
-			return;
-		}
-		if (!p->name[0]) {
-			if (dclass[0])
-				wcslcpy(p->name, dclass, 128);
-			else if (p->product[0])
-				wcslcpy(p->name, p->product, 128);
-			else
-				wcslcpy(p->name, L"iPhone", 128);
-		}
-		for (int i=0;i<g_nphones;i++) {
-			if (!_wcsicmp(g_phones[i].name, p->name)) {
-				WCHAR tmp[140];
-				swprintf_s(tmp, countof(tmp), L"%s (%d)", p->name, i+2);
-				wcslcpy(p->name, tmp, 128);
-				break;
-			}
-		}
-		pAMDeviceDisconnect(info->dev);
-		g_nphones++;
-	} else if (info->msg==ADNCI_MSG_DISCONNECTED) {
-		for (int i=0;i<g_nphones;i++) {
-			if (g_phones[i].dev==info->dev) {
-				ClosePhone(&g_phones[i]);
-				g_phones[i]=g_phones[g_nphones-1];
-				memset(&g_phones[g_nphones-1], 0, sizeof(g_phones[0]));
-				g_nphones--;
-				break;
-			}
-		}
+	} __except(EXCEPTION_EXECUTE_HANDLER) {
+		if (slot>=0 && slot<APPLE_MAX)
+			memset(&g_phones[slot], 0, sizeof(g_phones[0]));
 	}
 	AppleUnlock();
 }
