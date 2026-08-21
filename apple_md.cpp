@@ -2161,8 +2161,12 @@ int AppleMdGetFile(LPCWSTR deviceName, LPCWSTR relPath, LPCWSTR localPath, ULONG
 	return result;
 }
 
-static BOOL AfcDeleteTree(afc_connection conn, const char* path)
+#define AFC_DELETE_MAX_DEPTH 100
+
+static BOOL AfcDeleteTreeDepth(afc_connection conn, const char* path, int depth)
 {
+	if (depth>AFC_DELETE_MAX_DEPTH)
+		return FALSE;
 	if (!conn || !path || !path[0] || !pAFCRemovePath)
 		return FALSE;
 	if (PathLooksLikeDir(conn, path) && pAFCDirectoryOpen && pAFCDirectoryRead) {
@@ -2177,13 +2181,18 @@ static BOOL AfcDeleteTree(afc_connection conn, const char* path)
 				char child[1024];
 				if (AfcJoinChild(child, countof(child), path, name, TRUE)<0)
 					continue;
-				AfcDeleteTree(conn, child);
+				AfcDeleteTreeDepth(conn, child, depth+1);
 			}
 			if (pAFCDirectoryClose)
 				pAFCDirectoryClose(conn, dir);
 		}
 	}
 	return pAFCRemovePath(conn, path)==0;
+}
+
+static BOOL AfcDeleteTree(afc_connection conn, const char* path)
+{
+	return AfcDeleteTreeDepth(conn, path, 0);
 }
 
 BOOL AppleMdDelete(LPCWSTR deviceName, LPCWSTR relPath)
