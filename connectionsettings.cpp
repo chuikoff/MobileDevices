@@ -14,6 +14,7 @@
 #pragma comment(lib, "shell32.lib")
 
 extern WCHAR DefaultIniNameW[MAX_PATH];
+extern HINSTANCE hInst;
 WCHAR SettingsName[MAX_PATH];
 WCHAR LastSettingsName[MAX_PATH]={0};
 int LastLocalTime=0;
@@ -23,24 +24,60 @@ enum { UI_LANG_EN=0, UI_LANG_RU=1 };
 static PluginDeviceInfo g_dlgInfo;
 static BOOL g_dlgInfoOk=FALSE;
 static HICON g_aboutIcon=NULL;
+static WCHAR PluginIniNameW[MAX_PATH];
+
+static LPCWSTR GetPluginIniPath(void)
+{
+	if (PluginIniNameW[0])
+		return PluginIniNameW;
+	WCHAR path[MAX_PATH];
+	DWORD n=hInst ? GetModuleFileNameW(hInst, path, MAX_PATH) : 0;
+	if (n==0 || n>=MAX_PATH)
+		path[0]=0;
+	else {
+		WCHAR* slash=wcsrchr(path, L'\\');
+		if (slash)
+			slash[1]=0;
+		else
+			path[0]=0;
+	}
+	if (!path[0])
+		wcslcpy(PluginIniNameW, L"mobiledevices.ini", MAX_PATH);
+	else {
+		wcslcpy(PluginIniNameW, path, MAX_PATH);
+		wcslcat(PluginIniNameW, L"mobiledevices.ini", MAX_PATH);
+	}
+	return PluginIniNameW;
+}
 
 static int ReadLocalTimeIni(WCHAR* keyName)
 {
-	int value=GetPrivateProfileIntW(PLUGIN_INI_SECTION,keyName,-1,DefaultIniNameW);
+	int value=GetPrivateProfileIntW(PLUGIN_INI_SECTION,keyName,-1,GetPluginIniPath());
 	if (value>=0)
 		return value;
-	value=GetPrivateProfileIntW(PLUGIN_INI_SECTION_LEGACY,keyName,-1,DefaultIniNameW);
-	if (value>=0)
-		return value;
-	return GetPrivateProfileIntW(PLUGIN_INI_SECTION_LEGACY2,keyName,2,DefaultIniNameW);
+	if (DefaultIniNameW[0]) {
+		value=GetPrivateProfileIntW(PLUGIN_INI_SECTION,keyName,-1,DefaultIniNameW);
+		if (value>=0)
+			return value;
+		value=GetPrivateProfileIntW(PLUGIN_INI_SECTION_LEGACY,keyName,-1,DefaultIniNameW);
+		if (value>=0)
+			return value;
+		return GetPrivateProfileIntW(PLUGIN_INI_SECTION_LEGACY2,keyName,2,DefaultIniNameW);
+	}
+	return 2;
 }
 
 int GetPluginUiLanguage(void)
 {
 	WCHAR buf[16]=L"";
-	GetPrivateProfileStringW(PLUGIN_INI_SECTION,L"Language",L"",buf,16,DefaultIniNameW);
-	if (!buf[0])
-		GetPrivateProfileStringW(PLUGIN_INI_SECTION_LEGACY,L"Language",L"",buf,16,DefaultIniNameW);
+	GetPrivateProfileStringW(PLUGIN_INI_SECTION,L"Language",L"",buf,16,GetPluginIniPath());
+	if (!buf[0] && DefaultIniNameW[0]) {
+		GetPrivateProfileStringW(PLUGIN_INI_SECTION,L"Language",L"",buf,16,DefaultIniNameW);
+		if (!buf[0])
+			GetPrivateProfileStringW(PLUGIN_INI_SECTION_LEGACY,L"Language",L"",buf,16,DefaultIniNameW);
+		if (buf[0])
+			WritePrivateProfileStringW(PLUGIN_INI_SECTION,L"Language",buf,GetPluginIniPath());
+	}
 	if (buf[0]==L'r' || buf[0]==L'R' || buf[0]==L'1')
 		return UI_LANG_RU;
 	if (buf[0]==L'e' || buf[0]==L'E' || buf[0]==L'0')
@@ -52,8 +89,10 @@ int GetPluginUiLanguage(void)
 
 static void SavePluginUiLanguage(int lang)
 {
-	WritePrivateProfileStringW(PLUGIN_INI_SECTION,L"Language",
-		lang==UI_LANG_RU ? L"ru" : L"en", DefaultIniNameW);
+	LPCWSTR value=lang==UI_LANG_RU ? L"ru" : L"en";
+	if (!WritePrivateProfileStringW(PLUGIN_INI_SECTION,L"Language",value,GetPluginIniPath())
+		&& DefaultIniNameW[0])
+		WritePrivateProfileStringW(PLUGIN_INI_SECTION,L"Language",value,DefaultIniNameW);
 }
 
 int UseLocalTime(WCHAR* path)

@@ -1,4 +1,4 @@
-Mobile Devices plugin v0.9.24
+Mobile Devices plugin v0.9.25
 =======================
 Modified from Windows Media Audio 2 (wpdplug) by Christian Ghisler.
 
@@ -20,6 +20,8 @@ Tested on Windows 11.
 Requirements: Windows Vista or later with WPD (tested on Windows 11).
 iPhone: Apple Devices (Microsoft Store), not iTunes; 64-bit
 Total Commander.
+
+Settings: mobiledevices.ini next to the plugin (not fsplugin.ini).
 
 Installation: open this archive in Total Commander.
 
