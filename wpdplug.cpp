@@ -2477,7 +2477,10 @@ int __stdcall FsGetFileW(WCHAR* RemoteName,WCHAR* LocalName,int CopyFlags,Remote
 			ULONGLONG sz=0;
 			if (ri)
 				sz=MakeU64(ri->SizeLow, ri->SizeHigh);
-			return AppleMdGetFile(dev, rel, WLocalName, sz, mt);
+			int r=AppleMdGetFile(dev, rel, WLocalName, sz, mt);
+			if (r==FS_FILE_OK && Move)
+				AppleMdDelete(dev, rel);
+			return r;
 		}
 	}
 	LPWSTR pItemStorageID=NULL;
@@ -2556,6 +2559,23 @@ int __stdcall FsGetFileW(WCHAR* RemoteName,WCHAR* LocalName,int CopyFlags,Remote
 				LockPlugin();
 				TransferEnd(xferDev);
 			}
+		}
+	}
+	if (result==FS_FILE_OK && Move && pDeviceContent && pItemStorageID) {
+		IPortableDevicePropVariantCollection* pDel=NULL;
+		HRESULT hrd=CoCreateInstance(CLSID_PortableDevicePropVariantCollection,NULL,
+			CLSCTX_INPROC_SERVER,IID_IPortableDevicePropVariantCollection,(VOID**)&pDel);
+		if (SUCCEEDED(hrd) && pDel) {
+			PROPVARIANT pv={0};
+			PropVariantInit(&pv);
+			pv.vt=VT_LPWSTR;
+			pv.pwszVal=pItemStorageID;
+			pDel->Add(&pv);
+			pv.pwszVal=NULL;
+			hrd=pDeviceContent->Delete(PORTABLE_DEVICE_DELETE_NO_RECURSION,pDel,NULL);
+			SAFE_RELEASE(pDel);
+			if (SUCCEEDED(hrd) && hrd!=S_FALSE)
+				RemoveFullPathFromCache(WRemoteName);
 		}
 	}
 	SAFE_RELEASE(pStream);
@@ -2704,8 +2724,12 @@ int __stdcall FsPutFileW(WCHAR* LocalName,WCHAR* RemoteName,int CopyFlags)
 			sl[0]=0;
 			wcslcpy(rel, sl+1, wdirtypemax);
 		}
-		if (AppleMdIsDeviceName(dev))
-			return AppleMdPutFile(dev, rel, WLocalName, OverWrite);
+		if (AppleMdIsDeviceName(dev)) {
+			int r=AppleMdPutFile(dev, rel, WLocalName, OverWrite);
+			if (r==FS_FILE_OK && Move)
+				DeleteFileT(WLocalName);
+			return r;
+		}
 	}
 	LockPlugin();
 	InterlockedExchange(&g_abort,0);
@@ -3113,6 +3137,8 @@ int __stdcall FsPutFileW(WCHAR* LocalName,WCHAR* RemoteName,int CopyFlags)
 	}
 	SetCancelDevice(NULL);
 	UnlockPlugin();
+	if (result==FS_FILE_OK && Move)
+		DeleteFileT(WLocalName);
 	return result;
 }
 
