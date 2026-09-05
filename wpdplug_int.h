@@ -30,7 +30,27 @@ private:
 };
 void RequestAbort(void);
 void ResetAbort(void);
-void SetCancelDevice(IPortableDevice* pDevice);
+
+// One GetFile/PutFile operation. AddRef's the WPD device so RequestAbort can
+// call IPortableDevice::Cancel() from another thread without a dangling pointer.
+class TransferScope {
+	mutable volatile LONG m_abort;
+	IPortableDevice* m_device;
+	TransferScope* m_next;
+	static TransferScope* s_head;
+	static CRITICAL_SECTION s_cs;
+public:
+	explicit TransferScope(IPortableDevice* device);
+	~TransferScope();
+	BOOL aborted() const;
+	static void Init(void);
+	static void Uninit(void);
+	static void AbortAll(void);
+private:
+	TransferScope(const TransferScope&);
+	TransferScope& operator=(const TransferScope&);
+};
+
 BOOL GdiPlusInitialize(void);
 IPortableDevice* FindStoredDeviceByPath(LPCWSTR path);
 int ProgressCheck(WCHAR* src, WCHAR* dst, int percent);

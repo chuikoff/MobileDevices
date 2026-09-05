@@ -46,7 +46,6 @@ void __stdcall FsStatusInfoW(WCHAR* RemoteDir,int InfoStartEnd,int InfoOperation
 		SetContentStop(FALSE);
 	}
 	LockPlugin();
-	SetCancelDevice(NULL);
 	if (InfoStartEnd==FS_STATUS_END && InfoOperation==FS_STATUS_OP_LIST)
 		EnsureWpdEventsAdvised();
 	UnlockPlugin();

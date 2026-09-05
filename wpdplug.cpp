@@ -21,7 +21,8 @@
 CRITICAL_SECTION g_cs;
 volatile LONG g_abort=0;
 volatile LONG g_contentStop=0;
-IPortableDevice* g_cancelDevice=NULL;
+TransferScope* TransferScope::s_head=NULL;
+CRITICAL_SECTION TransferScope::s_cs;
 
 WCHAR DefaultIniNameW[MAX_PATH];
 HINSTANCE hInst;
@@ -81,11 +82,13 @@ BOOL APIENTRY DllMain( HMODULE hModule,
 	case DLL_PROCESS_ATTACH:
 		hInst=(HINSTANCE)hModule;
 		InitializeCriticalSection(&g_cs);
+		TransferScope::Init();
 		break;
 	case DLL_THREAD_ATTACH:
 	case DLL_THREAD_DETACH:
 		break;
 	case DLL_PROCESS_DETACH:
+		TransferScope::Uninit();
 		DeleteCriticalSection(&g_cs);
 		break;
 	}
@@ -266,9 +269,74 @@ ComApartmentGuard::~ComApartmentGuard()
 	UninitComApartment();
 }
 
-void SetCancelDevice(IPortableDevice* pDevice)
+void TransferScope::Init(void)
 {
-	g_cancelDevice=pDevice;
+	InitializeCriticalSection(&s_cs);
+	s_head=NULL;
+}
+
+void TransferScope::Uninit(void)
+{
+	DeleteCriticalSection(&s_cs);
+}
+
+TransferScope::TransferScope(IPortableDevice* device)
+{
+	InterlockedExchange(&m_abort,0);
+	m_device=NULL;
+	m_next=NULL;
+	if (device) {
+		device->AddRef();
+		m_device=device;
+	}
+	EnterCriticalSection(&s_cs);
+	m_next=s_head;
+	s_head=this;
+	LeaveCriticalSection(&s_cs);
+}
+
+TransferScope::~TransferScope()
+{
+	IPortableDevice* d=NULL;
+	EnterCriticalSection(&s_cs);
+	TransferScope** pp=&s_head;
+	while (*pp) {
+		if (*pp==this) {
+			*pp=m_next;
+			break;
+		}
+		pp=&(*pp)->m_next;
+	}
+	d=m_device;
+	m_device=NULL;
+	m_next=NULL;
+	LeaveCriticalSection(&s_cs);
+	if (d)
+		d->Release();
+}
+
+BOOL TransferScope::aborted() const
+{
+	return InterlockedCompareExchange(&m_abort,0,0)!=0;
+}
+
+void TransferScope::AbortAll(void)
+{
+	IPortableDevice* toCancel[16];
+	int n=0;
+	EnterCriticalSection(&s_cs);
+	for (TransferScope* c=s_head;c;c=c->m_next) {
+		InterlockedExchange(&c->m_abort,1);
+		if (c->m_device && n<16) {
+			c->m_device->AddRef();
+			toCancel[n++]=c->m_device;
+		}
+	}
+	LeaveCriticalSection(&s_cs);
+	for (int i=0;i<n;i++) {
+		toCancel[i]->Cancel();
+		toCancel[i]->Release();
+	}
 }
 
 IPortableDevice* FindStoredDeviceByPath(LPCWSTR path)
@@ -293,8 +361,7 @@ IPortableDevice* FindStoredDeviceByPath(LPCWSTR path)
 void RequestAbort(void)
 {
 	InterlockedExchange(&g_abort,1);
-	if (g_cancelDevice)
-		g_cancelDevice->Cancel();
+	TransferScope::AbortAll();
 }
 
 void ResetAbort(void)
@@ -2141,12 +2208,91 @@ BOOL __stdcall FsMkDirW(WCHAR* Path)
 	return result;
 }
 
+static BOOL IsLocalFsPath(LPCWSTR path)
+{
+	if (!path || !path[0])
+		return FALSE;
+	WCHAR c=path[0];
+	if (path[1]==L':' && ((c>=L'A'&&c<=L'Z')||(c>=L'a'&&c<=L'z')))
+		return TRUE;
+	if (path[0]==L'\\' && path[1]==L'\\')
+		return TRUE;
+	return FALSE;
+}
+
+static BOOL SplitPluginPath(LPCWSTR path, WCHAR* dev, int devcch, WCHAR* rel, int relcch)
+{
+	if (dev && devcch>0)
+		dev[0]=0;
+	if (rel && relcch>0)
+		rel[0]=0;
+	if (!path || path[0]!=L'\\' || path[1]==L'\\' || path[1]==0)
+		return FALSE;
+	WCHAR tmp[wdirtypemax];
+	wcslcpy(tmp, path+1, wdirtypemax-1);
+	WCHAR* sl=wcschr(tmp, L'\\');
+	if (sl) {
+		*sl=0;
+		if (rel)
+			wcslcpy(rel, sl+1, relcch);
+	}
+	if (dev)
+		wcslcpy(dev, tmp, devcch);
+	return dev && dev[0]!=0;
+}
+
+static BOOL WpdCopyOrMoveObject(IPortableDeviceContent* content, LPWSTR objectId, LPWSTR destFolderId, BOOL move)
+{
+	if (!content || !objectId || !destFolderId)
+		return FALSE;
+	IPortableDevicePropVariantCollection* col=NULL;
+	HRESULT hr=CoCreateInstance(CLSID_PortableDevicePropVariantCollection,NULL,
+		CLSCTX_INPROC_SERVER,IID_IPortableDevicePropVariantCollection,(VOID**)&col);
+	if (FAILED(hr) || !col)
+		return FALSE;
+	PROPVARIANT pv={0};
+	PropVariantInit(&pv);
+	pv.vt=VT_LPWSTR;
+	pv.pwszVal=objectId;
+	col->Add(&pv);
+	pv.pwszVal=NULL;
+	if (move)
+		hr=content->Move(col, destFolderId, NULL);
+	else
+		hr=content->Copy(col, destFolderId, NULL);
+	SAFE_RELEASE(col);
+	return SUCCEEDED(hr) && hr!=S_FALSE;
+}
+
+static int CopyMoveViaLocalTemp(WCHAR* OldName, WCHAR* NewName, BOOL Move, BOOL OverWrite, RemoteInfoStruct* ri)
+{
+	WCHAR tmpDir[MAX_PATH];
+	WCHAR tmpFile[MAX_PATH];
+	if (!GetTempPathW(MAX_PATH, tmpDir) || !GetTempFileNameW(tmpDir, L"mdv", 0, tmpFile))
+		return FS_FILE_WRITEERROR;
+	int r=FsGetFileW(OldName, tmpFile, FS_COPYFLAGS_OVERWRITE, ri);
+	if (r!=FS_FILE_OK) {
+		DeleteFileT(tmpFile);
+		return r;
+	}
+	int putFlags=OverWrite ? FS_COPYFLAGS_OVERWRITE : 0;
+	r=FsPutFileW(tmpFile, NewName, putFlags);
+	DeleteFileT(tmpFile);
+	if (r==FS_FILE_OK && Move)
+		FsDeleteFileW(OldName);
+	return r;
+}
+
 BOOL __stdcall FsDeleteFileW(WCHAR* RemoteName)
 {
-	if (RemoteName[0]!='\\')
+	if (!RemoteName || RemoteName[0]!='\\')
 		return false;
 
-	InitFunctionsIfNeeded(TRUE);
+	ComApartmentGuard comApt;
+	if (!comApt.ok())
+		return false;
+	if (!InitFunctionsIfNeeded(TRUE))
+		return false;
 	{
 		WCHAR dev[MAX_PATH];
 		WCHAR wcTmp[wdirtypemax];
@@ -2166,10 +2312,11 @@ BOOL __stdcall FsDeleteFileW(WCHAR* RemoteName)
 			return AppleMdDelete(dev, rel);
 	}
 
+	LockPlugin();
 	WCHAR wcSearch[wdirtypemax];
 	wcslcpy(wcSearch,RemoteName,wdirtypemax-1);
 	int l=(int)wcslen(wcSearch)-1;
-	if (wcSearch[l]=='\\')
+	if (l>=0 && wcSearch[l]=='\\')
 		wcSearch[l]=0;
 	BOOL result=false;
 	LPWSTR p=wcsrchr(wcSearch,'\\');
@@ -2183,7 +2330,6 @@ BOOL __stdcall FsDeleteFileW(WCHAR* RemoteName)
 		LPWSTR pItemStorageID=NULL;
 		HRESULT hr = GetFolderIDFromPathName(wcSearch,&pEnumObjectIDs,&pProperties,&pDeviceContent,&pStorageID);
 		if (SUCCEEDED(hr)) {
-			// Find the file/folder with this name!
 			int i=NameExistsInEnum(pEnumObjectIDs,p,pProperties,&pItemStorageID);
 			if (i!=0 && pItemStorageID) {
 				IPortableDevicePropVariantCollection* pCollection;
@@ -2217,6 +2363,7 @@ BOOL __stdcall FsDeleteFileW(WCHAR* RemoteName)
 		SAFE_RELEASE(pEnumObjectIDs);
 		SAFE_RELEASE(pProperties);
 	}
+	UnlockPlugin();
 	return result;
 }
 
@@ -2229,8 +2376,12 @@ BOOL __stdcall FsRemoveDirW(WCHAR* RemoteName)
 
 int __stdcall FsRenMovFileW(WCHAR* OldName,WCHAR* NewName,BOOL Move,BOOL OverWrite,RemoteInfoStruct* ri)
 {
-	if (OldName[0]!='\\'  || NewName[0]!='\\')
+	if (!OldName || !NewName || !OldName[0] || !NewName[0])
 		return FS_FILE_NOTFOUND;
+
+	ComApartmentGuard comApt;
+	if (!comApt.ok())
+		return FS_FILE_READERROR;
 
 	int err=ProgressProcT(PluginNumber,OldName,NewName,0);
 	if (err)
@@ -2239,8 +2390,37 @@ int __stdcall FsRenMovFileW(WCHAR* OldName,WCHAR* NewName,BOOL Move,BOOL OverWri
 	if (!InitFunctionsIfNeeded(TRUE))
 		return FS_FILE_READERROR;
 
+	BOOL oldLocal=IsLocalFsPath(OldName);
+	BOOL newLocal=IsLocalFsPath(NewName);
+	if (oldLocal && !newLocal && NewName[0]=='\\') {
+		int flags=OverWrite ? FS_COPYFLAGS_OVERWRITE : 0;
+		if (Move)
+			flags|=FS_COPYFLAGS_MOVE;
+		return FsPutFileW(OldName, NewName, flags);
+	}
+	if (newLocal && !oldLocal && OldName[0]=='\\') {
+		int flags=OverWrite ? FS_COPYFLAGS_OVERWRITE : 0;
+		if (Move)
+			flags|=FS_COPYFLAGS_MOVE;
+		return FsGetFileW(OldName, NewName, flags, ri);
+	}
+	if (oldLocal || newLocal)
+		return FS_FILE_NOTFOUND;
+	if (OldName[0]!='\\' || NewName[0]!='\\')
+		return FS_FILE_NOTFOUND;
+
+	WCHAR oldDev[MAX_PATH], newDev[MAX_PATH];
+	if (!SplitPluginPath(OldName, oldDev, MAX_PATH, NULL, 0) ||
+		!SplitPluginPath(NewName, newDev, MAX_PATH, NULL, 0))
+		return FS_FILE_NOTFOUND;
+
+	if (AppleMdIsDeviceName(oldDev) || AppleMdIsDeviceName(newDev))
+		return CopyMoveViaLocalTemp(OldName, NewName, Move, OverWrite, ri);
+	if (_wcsicmp(oldDev, newDev)!=0)
+		return CopyMoveViaLocalTemp(OldName, NewName, Move, OverWrite, ri);
+
 	WCHAR buf1[wdirtypemax];
-	if (Move) 
+	if (Move)
 		wcscpy_s(buf1,6,L"MOVE ");
 	else
 		wcscpy_s(buf1,6,L"COPY ");
@@ -2267,14 +2447,11 @@ int __stdcall FsRenMovFileW(WCHAR* OldName,WCHAR* NewName,BOOL Move,BOOL OverWri
 		p++;
 		p2[0]=0;
 		p2++;
-		// the interface supports rename in place, and copy/move WITHOUT renaming. Determine which to do first!
 		BOOL samedir=wcscmp(WOldName,WNewName)==0;
 		BOOL samename=wcscmp(p,p2)==0;
 		if (samedir && samename)
 			result=FS_FILE_OK;
-		else if (!samedir && !samename)
-			result=FS_FILE_NOTSUPPORTED;
-		else if (!samename) {    // rename in same dir!
+		else if (!samename && samedir) {
 			result=FS_FILE_NOTSUPPORTED;
 			HRESULT hr = GetFolderIDFromPathName(WOldName,&pEnumObjectIDs,&pProperties,&pDeviceContent,&pStorageID);
 			if (SUCCEEDED(hr)) {
@@ -2285,14 +2462,13 @@ int __stdcall FsRenMovFileW(WCHAR* OldName,WCHAR* NewName,BOOL Move,BOOL OverWri
 					pEnumObjectIDs->Reset();
 				i2=NameExistsInEnum(pEnumObjectIDs,p2,pProperties,&pDestStorageID);
 				if (i2 && pDestStorageID && pItemStorageID && wcscmp(pDestStorageID,pItemStorageID)==0) {
-					// same object (case-only rename on a case-insensitive store)
 					i2=0;
 					CoTaskMemFree(pDestStorageID);
 					pDestStorageID=NULL;
 				}
 				if (i2) {
 					if (i2==2)
-						result=FS_FILE_WRITEERROR;  // cannot overwrite folder with file!
+						result=FS_FILE_WRITEERROR;
 					else if (OverWrite) {
 						if (!FsDeleteFileW(NewName)) {
 							result=FS_FILE_WRITEERROR;
@@ -2333,15 +2509,13 @@ int __stdcall FsRenMovFileW(WCHAR* OldName,WCHAR* NewName,BOOL Move,BOOL OverWri
 							RemoveFullPathFromCache(NewName);
 							result=FS_FILE_OK;
 						}
-					} else if (hr==HRESULT_FROM_WIN32(ERROR_NOT_FOUND))
-						result=FS_FILE_NOTSUPPORTED;
-					else
+					} else
 						result=FS_FILE_WRITEERROR;
 					SAFE_RELEASE(pObjectProperties);
 					SAFE_RELEASE(pResultProperties);
 				}
 			}
-		} else {  // !samedir
+		} else {
 			HRESULT hr = GetFolderIDFromPathName(WOldName,&pEnumObjectIDs,&pProperties,&pDeviceContent,&pStorageID);
 			if (SUCCEEDED(hr)) {
 				hr = GetFolderIDFromPathName(WNewName,&pEnumObjectIDs2,&pProperties2,&pDeviceContent2,&pStorageID2);
@@ -2350,12 +2524,11 @@ int __stdcall FsRenMovFileW(WCHAR* OldName,WCHAR* NewName,BOOL Move,BOOL OverWri
 			} else
 				result=FS_FILE_READERROR;
 			if (SUCCEEDED(hr)) {
-				// Find the file/folder with this name!
 				int i=NameExistsInEnum(pEnumObjectIDs,p,pProperties,&pItemStorageID);
-				int i2=NameExistsInEnum(pEnumObjectIDs2,p,pProperties2,NULL);
+				int i2=NameExistsInEnum(pEnumObjectIDs2,p2,pProperties2,NULL);
 				if (i2) {
 					if (i2==2)
-						result=FS_FILE_WRITEERROR;  // cannot overwrite folder with file!
+						result=FS_FILE_WRITEERROR;
 					else if (OverWrite) {
 						if (!FsDeleteFileW(NewName)) {
 							result=FS_FILE_WRITEERROR;
@@ -2366,34 +2539,54 @@ int __stdcall FsRenMovFileW(WCHAR* OldName,WCHAR* NewName,BOOL Move,BOOL OverWri
 						result=FS_FILE_EXISTS;
 					}
 				}
-				if (i!=0 && pItemStorageID) {
-					IPortableDevicePropVariantCollection* pCollection=NULL;
-					hr = CoCreateInstance(CLSID_PortableDevicePropVariantCollection,NULL,
-						CLSCTX_INPROC_SERVER,IID_IPortableDevicePropVariantCollection,(VOID**) &pCollection);
-					if (SUCCEEDED(hr)) {
-						PROPVARIANT pv = {0};
-						PropVariantInit(&pv);
-						pv.vt      = VT_LPWSTR;
-						pv.pwszVal=wstrnew(pItemStorageID);
-						pCollection->Add(&pv);
-						result=FS_FILE_WRITEERROR;
-						if (Move)
-							hr = pDeviceContent->Move(pCollection,pStorageID2,NULL);
-						else
-							hr = pDeviceContent->Copy(pCollection,pStorageID2,NULL);
-						if (SUCCEEDED(hr)) {
-							if (hr!=S_FALSE) {
-								RemoveFullPathFromCache(OldName);
-								RemoveFullPathFromCache(NewName);
-								result=FS_FILE_OK;
+				if (i!=0 && pItemStorageID && result!=FS_FILE_EXISTS && result!=FS_FILE_WRITEERROR) {
+					BOOL didMove=FALSE;
+					BOOL didCopy=FALSE;
+					if (Move)
+						didMove=WpdCopyOrMoveObject(pDeviceContent,pItemStorageID,pStorageID2,TRUE);
+					if (!didMove)
+						didCopy=WpdCopyOrMoveObject(pDeviceContent,pItemStorageID,pStorageID2,FALSE);
+					if (didMove || didCopy) {
+						result=FS_FILE_OK;
+						if (!samename && pProperties2) {
+							if (pEnumObjectIDs2)
+								pEnumObjectIDs2->Reset();
+							LPWSTR copiedId=NULL;
+							int found=NameExistsInEnum(pEnumObjectIDs2,p,pProperties2,&copiedId);
+							if (found==1 && copiedId) {
+								IPortableDeviceValues* nv=NULL;
+								if (SUCCEEDED(CoCreateInstance(CLSID_PortableDeviceValues,NULL,
+									CLSCTX_INPROC_SERVER,IID_IPortableDeviceValues,(VOID**)&nv)) && nv) {
+									nv->SetStringValue(WPD_OBJECT_ORIGINAL_FILE_NAME, p2);
+									nv->SetStringValue(WPD_OBJECT_NAME, p2);
+									HRESULT hrn=pProperties2->SetValues(copiedId,nv,NULL);
+									if (FAILED(hrn)) {
+										nv->Clear();
+										nv->SetStringValue(WPD_OBJECT_NAME, p2);
+										hrn=pProperties2->SetValues(copiedId,nv,NULL);
+									}
+									if (FAILED(hrn))
+										result=FS_FILE_WRITEERROR;
+									SAFE_RELEASE(nv);
+								}
+								CoTaskMemFree(copiedId);
+							} else if (!didMove) {
+								result=FS_FILE_WRITEERROR;
 							}
-						} else if (hr==HRESULT_FROM_WIN32(ERROR_NOT_FOUND))
-							result=FS_FILE_NOTSUPPORTED;
-						PropVariantClear(&pv);
+						}
+						if (result==FS_FILE_OK && didCopy && Move)
+							FsDeleteFileW(OldName);
+						if (result==FS_FILE_OK) {
+							RemoveFullPathFromCache(OldName);
+							RemoveFullPathFromCache(NewName);
+						}
 					}
-					SAFE_RELEASE(pCollection);
+					if (result!=FS_FILE_OK && result!=FS_FILE_EXISTS)
+						result=CopyMoveViaLocalTemp(OldName, NewName, Move, OverWrite, ri);
 				}
 			}
+			if (result==FS_FILE_NOTFOUND)
+				result=CopyMoveViaLocalTemp(OldName, NewName, Move, OverWrite, ri);
 		}
 		if (pItemStorageID)
 			CoTaskMemFree(pItemStorageID);
@@ -2409,11 +2602,9 @@ int __stdcall FsRenMovFileW(WCHAR* OldName,WCHAR* NewName,BOOL Move,BOOL OverWri
 		SAFE_RELEASE(pProperties2);
 	}
 	if (result==FS_FILE_OK) {
-		result=ProgressProcT(PluginNumber,OldName,NewName,100);
-		if (result)
+		err=ProgressProcT(PluginNumber,OldName,NewName,100);
+		if (err)
 			return FS_FILE_USERABORT;
-	}
-	if (result==FS_FILE_OK) {
 		wcslcat(buf1,OldName,wdirtypemax-1);
 		wcslcat(buf1,L"->",wdirtypemax-1);
 		wcslcat(buf1,NewName,wdirtypemax-1);
@@ -2486,9 +2677,8 @@ int __stdcall FsGetFileW(WCHAR* RemoteName,WCHAR* LocalName,int CopyFlags,Remote
 	LPWSTR pItemStorageID=NULL;
 	IPortableDeviceContent* pDeviceContent=NULL;
 	LockPlugin();
-	InterlockedExchange(&g_abort,0);
+	TransferScope xfer(FindStoredDeviceByPath(WRemoteName));
 	HRESULT hr = GetFolderIDFromPathName(WRemoteName,NULL,NULL,&pDeviceContent,&pItemStorageID);
-	SetCancelDevice(FindStoredDeviceByPath(WRemoteName));
 	ULONGLONG totalsize=0;
 	ULONGLONG totalcopied=0;
 	if (ri)
@@ -2521,6 +2711,10 @@ int __stdcall FsGetFileW(WCHAR* RemoteName,WCHAR* LocalName,int CopyFlags,Remote
 					DWORD lasttime=GetTickCount();
 					DWORD thistime;
 					while (1) {
+						if (xfer.aborted()) {
+							result=FS_FILE_USERABORT;
+							break;
+						}
 						hr=pStream->Read(buf,OptimalBufferSize,&BytesRead);
 						if (SUCCEEDED(hr) && BytesRead>0) {
 							if (!WriteFile(f,buf,BytesRead,&BytesWritten,NULL)) {
@@ -2583,7 +2777,6 @@ int __stdcall FsGetFileW(WCHAR* RemoteName,WCHAR* LocalName,int CopyFlags,Remote
 	if (pItemStorageID)
 		CoTaskMemFree(pItemStorageID);
 	SAFE_RELEASE(pDeviceContent);
-	SetCancelDevice(NULL);
 	UnlockPlugin();
 	return result;
 }
@@ -2732,8 +2925,7 @@ int __stdcall FsPutFileW(WCHAR* LocalName,WCHAR* RemoteName,int CopyFlags)
 		}
 	}
 	LockPlugin();
-	InterlockedExchange(&g_abort,0);
-	SetCancelDevice(FindStoredDeviceByPath(RemoteName));
+	TransferScope xfer(FindStoredDeviceByPath(RemoteName));
 	p=wcsrchr(WRemoteName,'\\');
 	int result=FS_FILE_READERROR;
 	ULONGLONG totalsize=0;
@@ -2883,6 +3075,10 @@ int __stdcall FsPutFileW(WCHAR* LocalName,WCHAR* RemoteName,int CopyFlags)
 									DWORD lasttime=GetTickCount();
 									DWORD thistime;
 									while (1) {
+										if (xfer.aborted()) {
+											result=FS_FILE_USERABORT;
+											break;
+										}
 										if (ReadFile(f,buf,OptimalBufferSize,&BytesRead,NULL) && BytesRead>0) {
 											hr=pStream->Write(buf,BytesRead,&BytesWritten);
 											if (!SUCCEEDED(hr) || BytesWritten==0) {
@@ -3135,7 +3331,6 @@ int __stdcall FsPutFileW(WCHAR* LocalName,WCHAR* RemoteName,int CopyFlags)
 			SAFE_RELEASE(pProperties);
 		}
 	}
-	SetCancelDevice(NULL);
 	UnlockPlugin();
 	if (result==FS_FILE_OK && Move)
 		DeleteFileT(WLocalName);
