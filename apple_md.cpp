@@ -430,12 +430,36 @@ static BOOL AfcCopyStr(char* dst, size_t dstcch, const char* src)
 	return TRUE;
 }
 
+static BOOL AfcPathHasDotDot(const char* s)
+{
+	if (!s || !s[0])
+		return FALSE;
+	const char* p=s;
+	while (*p) {
+		while (*p=='/')
+			p++;
+		if (!*p)
+			break;
+		const char* seg=p;
+		while (*p && *p!='/')
+			p++;
+		size_t n=(size_t)(p-seg);
+		if (n==2 && seg[0]=='.' && seg[1]=='.')
+			return TRUE;
+	}
+	return FALSE;
+}
+
 static BOOL AfcJoinSlash(char* dst, size_t dstcch, const char* left, const char* right)
 {
 	if (!dst || dstcch==0)
 		return FALSE;
 	if (!left) left="";
 	if (!right) right="";
+	if (AfcPathHasDotDot(left) || AfcPathHasDotDot(right)) {
+		dst[0]=0;
+		return FALSE;
+	}
 	size_t nl=strlen(left), nr=strlen(right);
 	if (nl+1+nr>=dstcch) {
 		dst[0]=0;
@@ -464,7 +488,9 @@ static BOOL AfcPrepend(char* dst, size_t dstcch, const char* prefix)
 
 static int AfcJoinChild(char* dst, size_t dstcch, const char* dir, const char* name, BOOL slashRoot)
 {
-	if (!dst || dstcch==0 || !name)
+	if (!dst || dstcch==0 || !name || !name[0])
+		return -1;
+	if (!strcmp(name, "..") || !strcmp(name, ".") || strchr(name, '/') || strchr(name, '\\'))
 		return -1;
 	BOOL ok;
 	if (dir && dir[0] && strcmp(dir, "/")!=0 && strcmp(dir, ".")!=0)
@@ -1903,12 +1929,17 @@ static BOOL EnsurePanicAfc(ApplePhone* p)
 	DWORD w=WaitForSingleObject(j->done, 5000);
 	if (w!=WAIT_OBJECT_0) {
 		InterlockedExchange(&j->cancel, 1);
-		AppleLock();
-		p->panicListed=TRUE;
-		if (p->nPanicEnt<0)
-			p->nPanicEnt=0;
-		AppleUnlock();
-		CloseHandle(th);
+		/* Do not set panicListed on timeout — allow retry. */
+		DWORD w2=WaitForSingleObject(j->done, 2000);
+		if (w2==WAIT_OBJECT_0) {
+			WaitForSingleObject(th, 1000);
+			CloseHandle(th);
+			if (j->done) CloseHandle(j->done);
+			free(j);
+		} else {
+			/* Thread still running: leak job intentionally to avoid UAF. */
+			CloseHandle(th);
+		}
 		return FALSE;
 	}
 	WaitForSingleObject(th, 1000);
@@ -1923,6 +1954,10 @@ static void JoinAfc(const char* prefix, const char* rel, char* out, int cch)
 {
 	if (!out || cch<=0)
 		return;
+	if (rel && AfcPathHasDotDot(rel)) {
+		out[0]=0;
+		return;
+	}
 	if (!rel || !rel[0] || !strcmp(rel, "/") || !strcmp(rel, ".")) {
 		if (prefix && prefix[0])
 			AfcCopyStr(out, (size_t)cch, prefix);
@@ -2158,7 +2193,7 @@ void AppleMdFindClose(HANDLE h)
 	AppleUnlock();
 }
 
-int AppleMdGetFile(LPCWSTR deviceName, LPCWSTR relPath, LPCWSTR localPath, ULONGLONG, FILETIME* mtime)
+int AppleMdGetFile(LPCWSTR deviceName, LPCWSTR relPath, LPCWSTR localPath, ULONGLONG totalHint, FILETIME* mtime)
 {
 	AppleLock();
 	ApplePhone* p=FindPhoneByName(deviceName);
@@ -2179,8 +2214,20 @@ int AppleMdGetFile(LPCWSTR deviceName, LPCWSTR relPath, LPCWSTR localPath, ULONG
 		AppleUnlock();
 		return FS_FILE_WRITEERROR;
 	}
+	AppleUnlock(); /* unlock around I/O chunks */
+
+	WCHAR remoteDisp[wdirtypemax];
+	wcslcpy(remoteDisp, L"\\", wdirtypemax-1);
+	wcslcat(remoteDisp, deviceName ? deviceName : L"", wdirtypemax-1);
+	if (relPath && relPath[0]) {
+		wcslcat(remoteDisp, L"\\", wdirtypemax-1);
+		wcslcat(remoteDisp, relPath, wdirtypemax-1);
+	}
+
 	char buf[64*1024];
 	int result=FS_FILE_OK;
+	ULONGLONG totalcopied=0;
+	DWORD lasttime=GetTickCount();
 	for (;;) {
 		size_t n=sizeof(buf);
 		if (pAFCFileRefRead(conn, ref, buf, &n)!=0) {
@@ -2193,18 +2240,42 @@ int AppleMdGetFile(LPCWSTR deviceName, LPCWSTR relPath, LPCWSTR localPath, ULONG
 			result=FS_FILE_READERROR;
 			break;
 		}
-		DWORD wr=0;
-		if (!WriteFile(out, buf, (DWORD)n, &wr, NULL) || wr!=(DWORD)n) {
-			result=FS_FILE_WRITEERROR;
+		DWORD left=(DWORD)n;
+		char* pbuf=buf;
+		while (left>0) {
+			DWORD wr=0;
+			if (!WriteFile(out, pbuf, left, &wr, NULL) || wr==0) {
+				result=FS_FILE_WRITEERROR;
+				break;
+			}
+			totalcopied+=wr;
+			pbuf+=wr;
+			left-=wr;
+		}
+		if (result!=FS_FILE_OK)
 			break;
+		DWORD thistime=GetTickCount();
+		if ((thistime-lasttime)>100) {
+			lasttime=thistime;
+			int percent=0;
+			if (totalHint)
+				percent=(int)((totalcopied*100)/totalHint);
+			if (ProgressCheck(remoteDisp, (WCHAR*)localPath, percent)) {
+				result=FS_FILE_USERABORT;
+				break;
+			}
 		}
 	}
+	if (result==FS_FILE_OK && totalHint!=0 && totalcopied!=totalHint)
+		result=FS_FILE_READERROR;
+
+	AppleLock();
 	pAFCFileRefClose(conn, ref);
+	AppleUnlock();
 	if (mtime && result==FS_FILE_OK &&
 		!(mtime->dwHighDateTime==0xFFFFFFFF))
 		SetFileTime(out, NULL, NULL, mtime);
 	CloseHandle(out);
-	AppleUnlock();
 	if (result!=FS_FILE_OK)
 		DeleteFileT((WCHAR*)localPath);
 	return result;
@@ -2321,6 +2392,21 @@ int AppleMdPutFile(LPCWSTR deviceName, LPCWSTR relPath, LPCWSTR localPath, BOOL 
 		AppleUnlock();
 		return FS_FILE_WRITEERROR;
 	}
+	AppleUnlock(); /* unlock around I/O chunks */
+
+	WCHAR remoteDisp[wdirtypemax];
+	wcslcpy(remoteDisp, L"\\", wdirtypemax-1);
+	wcslcat(remoteDisp, deviceName ? deviceName : L"", wdirtypemax-1);
+	if (relPath && relPath[0]) {
+		wcslcat(remoteDisp, L"\\", wdirtypemax-1);
+		wcslcat(remoteDisp, relPath, wdirtypemax-1);
+	}
+
+	DWORD sizeHigh=0;
+	DWORD sizeLow=GetFileSize(in, &sizeHigh);
+	ULONGLONG totalsize=((ULONGLONG)sizeHigh<<32) | (ULONGLONG)sizeLow;
+	ULONGLONG totalcopied=0;
+	DWORD lasttime=GetTickCount();
 	char buf[64*1024];
 	int result=FS_FILE_OK;
 	for (;;) {
@@ -2340,9 +2426,25 @@ int AppleMdPutFile(LPCWSTR deviceName, LPCWSTR relPath, LPCWSTR localPath, BOOL 
 			result=FS_FILE_WRITEERROR;
 			break;
 		}
+		totalcopied+=n;
+		DWORD thistime=GetTickCount();
+		if ((thistime-lasttime)>100) {
+			lasttime=thistime;
+			int percent=0;
+			if (totalsize)
+				percent=(int)((totalcopied*100)/totalsize);
+			if (ProgressCheck((WCHAR*)localPath, remoteDisp, percent)) {
+				result=FS_FILE_USERABORT;
+				break;
+			}
+		}
 	}
+	if (result==FS_FILE_OK && totalsize!=0 && totalcopied!=totalsize)
+		result=FS_FILE_WRITEERROR;
+
+	AppleLock();
 	pAFCFileRefClose(conn, ref);
-	CloseHandle(in);
 	AppleUnlock();
+	CloseHandle(in);
 	return result;
 }
