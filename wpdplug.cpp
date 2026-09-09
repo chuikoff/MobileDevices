@@ -19,6 +19,7 @@
 #define DefPluginTitle PLUGIN_DISPLAY_NAME
 
 CRITICAL_SECTION g_cs;
+static BOOL g_csInit=FALSE;
 volatile LONG g_abort=0;
 volatile LONG g_contentStop=0;
 TransferScope* TransferScope::s_head=NULL;
@@ -82,6 +83,7 @@ BOOL APIENTRY DllMain( HMODULE hModule,
 	case DLL_PROCESS_ATTACH:
 		hInst=(HINSTANCE)hModule;
 		InitializeCriticalSection(&g_cs);
+		g_csInit=TRUE;
 		TransferScope::Init();
 		break;
 	case DLL_THREAD_ATTACH:
@@ -89,7 +91,7 @@ BOOL APIENTRY DllMain( HMODULE hModule,
 		break;
 	case DLL_PROCESS_DETACH:
 		TransferScope::Uninit();
-		DeleteCriticalSection(&g_cs);
+		/* g_cs deleted in FsContentPluginUnloading */
 		break;
 	}
     return TRUE;
@@ -169,12 +171,16 @@ HWND hWndNotify=NULL;
 
 void LockPlugin(void)
 {
+	if (!g_csInit)
+		return;
 	EnterCriticalSection(&g_cs);
 	t_pluginLockHeld++;
 }
 
 void UnlockPlugin(void)
 {
+	if (!g_csInit)
+		return;
 	t_pluginLockHeld--;
 	LeaveCriticalSection(&g_cs);
 }
@@ -1600,7 +1606,12 @@ static void PrefetchBatchValues(pLastFindStuct lf)
 	if (SUCCEEDED(hr))
 		hr=bulk->Start(ctx);
 	if (SUCCEEDED(hr)) {
+		BOOL held=t_pluginLockHeld>0;
+		if (held)
+			LeaveCriticalSection(&g_cs);
 		HRESULT waitHr=cb->WaitDone(800);
+		if (held)
+			EnterCriticalSection(&g_cs);
 		if (FAILED(waitHr)) {
 			g_bulkDisabled=TRUE;
 			bulk->Cancel(ctx);
@@ -2138,7 +2149,11 @@ BOOL __stdcall FsMkDirW(WCHAR* Path)
 		return false;
 	BOOL result=false;
 
-	InitFunctionsIfNeeded(TRUE);
+	ComApartmentGuard comApt;
+	if (!comApt.ok())
+		return false;
+	if (!InitFunctionsIfNeeded(TRUE))
+		return false;
 	{
 		WCHAR dev[MAX_PATH];
 		const WCHAR* rp=Path[0]=='\\' ? Path+1 : Path;
@@ -2154,6 +2169,7 @@ BOOL __stdcall FsMkDirW(WCHAR* Path)
 			return AppleMdMkDir(dev, rel);
 	}
 
+	LockPlugin();
 	WCHAR wcSearch[wdirtypemax],*p;
 	wcslcpy(wcSearch,Path,wdirtypemax-1);
 	p=wcsrchr(wcSearch,'\\');
@@ -2205,6 +2221,7 @@ BOOL __stdcall FsMkDirW(WCHAR* Path)
 			SAFE_RELEASE(pProperties);
 		}
 	}
+	UnlockPlugin();
 	return result;
 }
 
@@ -2419,6 +2436,7 @@ int __stdcall FsRenMovFileW(WCHAR* OldName,WCHAR* NewName,BOOL Move,BOOL OverWri
 	if (_wcsicmp(oldDev, newDev)!=0)
 		return CopyMoveViaLocalTemp(OldName, NewName, Move, OverWrite, ri);
 
+	LockPlugin();
 	WCHAR buf1[wdirtypemax];
 	if (Move)
 		wcscpy_s(buf1,6,L"MOVE ");
@@ -2601,6 +2619,7 @@ int __stdcall FsRenMovFileW(WCHAR* OldName,WCHAR* NewName,BOOL Move,BOOL OverWri
 		SAFE_RELEASE(pProperties);
 		SAFE_RELEASE(pProperties2);
 	}
+	UnlockPlugin();
 	if (result==FS_FILE_OK) {
 		err=ProgressProcT(PluginNumber,OldName,NewName,100);
 		if (err)
@@ -2717,11 +2736,19 @@ int __stdcall FsGetFileW(WCHAR* RemoteName,WCHAR* LocalName,int CopyFlags,Remote
 						}
 						hr=pStream->Read(buf,OptimalBufferSize,&BytesRead);
 						if (SUCCEEDED(hr) && BytesRead>0) {
-							if (!WriteFile(f,buf,BytesRead,&BytesWritten,NULL)) {
-								result=FS_FILE_WRITEERROR;
-								break;
+							DWORD left=BytesRead;
+							char* pbuf=buf;
+							while (left>0) {
+								if (!WriteFile(f,pbuf,left,&BytesWritten,NULL) || BytesWritten==0) {
+									result=FS_FILE_WRITEERROR;
+									break;
+								}
+								totalcopied+=BytesWritten;
+								pbuf+=BytesWritten;
+								left-=BytesWritten;
 							}
-							totalcopied+=BytesWritten;
+							if (result==FS_FILE_WRITEERROR)
+								break;
 							thistime=GetTickCount();
 							if (totalsize && (thistime-lasttime)>100) {
 								int percent=(int)((totalcopied*100)/totalsize);
@@ -2733,8 +2760,12 @@ int __stdcall FsGetFileW(WCHAR* RemoteName,WCHAR* LocalName,int CopyFlags,Remote
 								}
 							}
 						} else {
-							if (BytesRead==0)
-								result=FS_FILE_OK;
+							if (BytesRead==0) {
+								if (totalsize!=0 && totalcopied!=totalsize)
+									result=FS_FILE_READERROR;
+								else
+									result=FS_FILE_OK;
+							}
 							break;
 						}
 					}
@@ -2955,9 +2986,12 @@ int __stdcall FsPutFileW(WCHAR* LocalName,WCHAR* RemoteName,int CopyFlags)
 						PROPVARIANT pv = {0};
 						PropVariantInit(&pv);
 						pv.vt      = VT_LPWSTR;
-						pv.pwszVal=wstrnew(pItemStorageID);
+						int len=(int)wcslen(pItemStorageID)+1;
+						pv.pwszVal=(LPWSTR)CoTaskMemRealloc(NULL,len*sizeof(WCHAR));
+						wcscpy_s((LPWSTR)pv.pwszVal,len,pItemStorageID);
 						pCollection->Add(&pv);
 						hr = pDeviceContent->Delete(PORTABLE_DEVICE_DELETE_NO_RECURSION,pCollection,NULL);
+						PropVariantClear(&pv);
 						SAFE_RELEASE(pCollection);
 						if (hr == S_FALSE)
 							hr=E_FAIL;
@@ -3080,12 +3114,20 @@ int __stdcall FsPutFileW(WCHAR* LocalName,WCHAR* RemoteName,int CopyFlags)
 											break;
 										}
 										if (ReadFile(f,buf,OptimalBufferSize,&BytesRead,NULL) && BytesRead>0) {
-											hr=pStream->Write(buf,BytesRead,&BytesWritten);
-											if (!SUCCEEDED(hr) || BytesWritten==0) {
-												result=FS_FILE_WRITEERROR;
-												break;
+											DWORD left=BytesRead;
+											char* pbuf=buf;
+											while (left>0) {
+												hr=pStream->Write(pbuf,left,&BytesWritten);
+												if (!SUCCEEDED(hr) || BytesWritten==0) {
+													result=FS_FILE_WRITEERROR;
+													break;
+												}
+												totalcopied+=BytesWritten;
+												pbuf+=BytesWritten;
+												left-=BytesWritten;
 											}
-											totalcopied+=BytesWritten;
+											if (result==FS_FILE_WRITEERROR)
+												break;
 											thistime=GetTickCount();
 											if (totalsize && (thistime-lasttime)>100) {
 												int percent=(int)((totalcopied*100)/totalsize);
@@ -3097,8 +3139,12 @@ int __stdcall FsPutFileW(WCHAR* LocalName,WCHAR* RemoteName,int CopyFlags)
 												}
 											}
 										} else {
-											if (BytesRead==0)
-												result=FS_FILE_OK;
+											if (BytesRead==0) {
+												if (totalsize!=0 && totalcopied!=totalsize)
+													result=FS_FILE_WRITEERROR;
+												else
+													result=FS_FILE_OK;
+											}
 											break;
 										}
 									}
@@ -3134,15 +3180,17 @@ int __stdcall FsPutFileW(WCHAR* LocalName,WCHAR* RemoteName,int CopyFlags)
 
 									int err=0;
 									if (SUCCEEDED(hr2))
-										HRESULT hr2=pStream->QueryInterface(IID_IPortableDeviceDataStream,(void**)&pResultingStream);
+										hr2=pStream->QueryInterface(IID_IPortableDeviceDataStream,(void**)&pResultingStream);
 									else
 										err=1;
 									SAFE_RELEASE(pStream);
-									if (SUCCEEDED(hr2)) {
+									if (SUCCEEDED(hr2) && pResultingStream) {
 										hr2=pResultingStream->GetObjectID(&NewId);
 										SAFE_RELEASE(pResultingStream);
-									} else if (err==0)
+									} else if (err==0) {
+										hr2=E_FAIL;
 										err=2;
+									}
 									if (SUCCEEDED(hr2)) {
 										hr2=pDeviceContent->Transfer(&pResources);
 									} else if (err==0)
@@ -3424,6 +3472,10 @@ void __stdcall FsContentPluginUnloading(void)
 		t_comDepth=0;
 	}
 	firstinitialized=FALSE;
+	if (g_csInit) {
+		DeleteCriticalSection(&g_cs);
+		g_csInit=FALSE;
+	}
 }
 
 void __stdcall FsSetDefaultParams(FsDefaultParamStruct* dps)
