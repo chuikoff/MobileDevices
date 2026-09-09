@@ -79,13 +79,28 @@ typedef struct {
 	WCHAR model[128];
 	WCHAR firmware[128];
 	WCHAR protocol[80];
+	WCHAR serial[64];
+	WCHAR imei[64];
+	WCHAR imei2[64];
 	int battery;
+	int batteryHealth;   /* -1 = hide; maximum capacity % */
+	int batteryCycles;   /* -1 = hide */
+	ULONGLONG designCapacity; /* mAh raw, 0 = unset */
+	ULONGLONG maxCapacity;    /* mAh raw, 0 = unset */
 	int nstor;
 	struct {
 		WCHAR name[80];
 		ULONGLONG freeBytes;
 		ULONGLONG capacityBytes;
 	} stor[DEVICE_INFO_MAX_STOR];
+	/* Apple disk_usage detail (0 = unset / hide) */
+	ULONGLONG totalDisk;
+	ULONGLONG dataCapacity;
+	ULONGLONG dataAvailable;
+	ULONGLONG systemCapacity;
+	ULONGLONG systemAvailable;
+	ULONGLONG photoUsage;
+	ULONGLONG appUsage;
 } PluginDeviceInfo;
 
 BOOL QueryDeviceInfo(LPCWSTR remoteName, PluginDeviceInfo* info);

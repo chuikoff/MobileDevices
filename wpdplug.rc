@@ -24,13 +24,13 @@ LANGUAGE LANG_NEUTRAL, SUBLANG_NEUTRAL
 #pragma code_page(65001)
 #endif
 
-IDD_DEVICEINFO DIALOGEX 0, 0, 320, 200
+IDD_DEVICEINFO DIALOGEX 0, 0, 320, 260
 STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "Mobile Devices"
 FONT 9, "Segoe UI", 400, 0, 0x1
 BEGIN
-    EDITTEXT        IDC_DEVICE_INFO,7,7,306,168,ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL | WS_BORDER | NOT WS_TABSTOP
-    DEFPUSHBUTTON   "OK",IDOK,263,180,50,14
+    EDITTEXT        IDC_DEVICE_INFO,7,7,306,228,ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL | WS_BORDER | NOT WS_TABSTOP
+    DEFPUSHBUTTON   "OK",IDOK,263,240,50,14
 END
 
 IDD_PLUGINABOUT DIALOGEX 0, 0, 280, 156
@@ -105,8 +105,8 @@ IDI_IPHONE              ICON                    "ICONIPHONE.ICO"
 //
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 0,9,30,0
- PRODUCTVERSION 0,9,30,0
+ FILEVERSION 0,9,31,0
+ PRODUCTVERSION 0,9,31,0
  FILEFLAGSMASK 0x3fL
 #ifdef _DEBUG
  FILEFLAGS 0x1L
@@ -123,12 +123,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "Ghisler Software GmbH"
             VALUE "FileDescription", "Mobile Devices - Total Commander Android/iPhone plugin (modified from MediaAudio2)"
-            VALUE "FileVersion", "0.9.30.0"
+            VALUE "FileVersion", "0.9.31.0"
             VALUE "InternalName", "mobiledevices"
             VALUE "LegalCopyright", "Copyright (C) 2011-2018 Christian Ghisler, Ghisler Software GmbH. Modifications (C) 2026. BSD-3-Clause."
             VALUE "OriginalFilename", "mobiledevices.wfx"
             VALUE "ProductName", "Mobile Devices"
-            VALUE "ProductVersion", "0.9.30.0"
+            VALUE "ProductVersion", "0.9.31.0"
         END
     END
     BLOCK "VarFileInfo"
