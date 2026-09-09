@@ -206,6 +206,8 @@ BOOL QueryDeviceInfo(LPCWSTR remoteName, PluginDeviceInfo* info)
 		return FALSE;
 	memset(info, 0, sizeof(*info));
 	info->battery=-1;
+	info->batteryHealth=-1;
+	info->batteryCycles=-1;
 	if (!remoteName || remoteName[0]==0)
 		return FALSE;
 
@@ -360,28 +362,90 @@ void FormatDeviceInfo(int lang, const PluginDeviceInfo* info, WCHAR* out, int ou
 		swprintf_s(line, ru ? L"Прошивка: %s\r\n" : L"Firmware: %s\r\n", info->firmware);
 		wcslcat(out, line, outcch);
 	}
+	if (info->serial[0]) {
+		swprintf_s(line, ru ? L"Серийный номер: %s\r\n" : L"Serial: %s\r\n", info->serial);
+		wcslcat(out, line, outcch);
+	}
+	if (info->imei[0]) {
+		swprintf_s(line, L"IMEI: %s\r\n", info->imei);
+		wcslcat(out, line, outcch);
+	}
+	if (info->imei2[0]) {
+		swprintf_s(line, L"IMEI2: %s\r\n", info->imei2);
+		wcslcat(out, line, outcch);
+	}
 	if (info->battery>=0)
 		swprintf_s(line, ru ? L"Батарея: %d%%\r\n" : L"Battery: %d%%\r\n", info->battery);
 	else
 		swprintf_s(line, ru ? L"Батарея: %s\r\n" : L"Battery: %s\r\n", na);
 	wcslcat(out, line, outcch);
+	if (info->batteryHealth>=0) {
+		swprintf_s(line, ru ? L"Состояние батареи: %d%%\r\n" : L"Battery health: %d%%\r\n",
+			info->batteryHealth);
+		wcslcat(out, line, outcch);
+	}
+	if (info->batteryCycles>=0) {
+		swprintf_s(line, ru ? L"Циклы зарядки: %d\r\n" : L"Charge cycles: %d\r\n",
+			info->batteryCycles);
+		wcslcat(out, line, outcch);
+	}
 	if (info->protocol[0]) {
 		swprintf_s(line, ru ? L"Протокол: %s\r\n" : L"Protocol: %s\r\n", info->protocol);
 		wcslcat(out, line, outcch);
 	}
 	if (info->nstor==0) {
 		wcslcat(out, ru ? L"Память: н/д\r\n" : L"Storage: n/a\r\n", outcch);
-		return;
+	} else {
+		for (int i=0;i<info->nstor;i++) {
+			WCHAR fs[64], cs[64];
+			if (info->stor[i].capacityBytes || info->stor[i].freeBytes) {
+				FormatBytes(info->stor[i].freeBytes, ru, fs, 64);
+				FormatBytes(info->stor[i].capacityBytes, ru, cs, 64);
+				swprintf_s(line, ru ? L"%s: %s свободно / %s\r\n" : L"%s: %s free / %s\r\n",
+					info->stor[i].name, fs, cs);
+			} else
+				swprintf_s(line, L"%s\r\n", info->stor[i].name);
+			wcslcat(out, line, outcch);
+		}
 	}
-	for (int i=0;i<info->nstor;i++) {
-		WCHAR fs[64], cs[64];
-		if (info->stor[i].capacityBytes || info->stor[i].freeBytes) {
-			FormatBytes(info->stor[i].freeBytes, ru, fs, 64);
-			FormatBytes(info->stor[i].capacityBytes, ru, cs, 64);
-			swprintf_s(line, ru ? L"%s: %s свободно / %s\r\n" : L"%s: %s free / %s\r\n",
-				info->stor[i].name, fs, cs);
-		} else
-			swprintf_s(line, L"%s\r\n", info->stor[i].name);
+	/* Apple disk_usage breakdown when detail fields are set. */
+	if (info->systemCapacity || info->dataCapacity || info->totalDisk) {
+		WCHAR usedS[64], usedD[64], freeS[64];
+		if (info->systemCapacity) {
+			ULONGLONG used=info->systemCapacity;
+			if (info->systemAvailable && info->systemAvailable<=info->systemCapacity)
+				used=info->systemCapacity-info->systemAvailable;
+			FormatBytes(used, ru, usedS, 64);
+			swprintf_s(line, ru ? L"Система: %s\r\n" : L"System: %s\r\n", usedS);
+			wcslcat(out, line, outcch);
+		}
+		if (info->dataCapacity) {
+			ULONGLONG used=info->dataCapacity;
+			if (info->dataAvailable && info->dataAvailable<=info->dataCapacity)
+				used=info->dataCapacity-info->dataAvailable;
+			FormatBytes(used, ru, usedD, 64);
+			swprintf_s(line, ru ? L"Данные: %s\r\n" : L"Data: %s\r\n", usedD);
+			wcslcat(out, line, outcch);
+		}
+		ULONGLONG freeb=info->dataAvailable;
+		if (!freeb && info->nstor>0)
+			freeb=info->stor[0].freeBytes;
+		if (freeb) {
+			FormatBytes(freeb, ru, freeS, 64);
+			swprintf_s(line, ru ? L"Свободно: %s\r\n" : L"Free: %s\r\n", freeS);
+			wcslcat(out, line, outcch);
+		}
+	}
+	if (info->photoUsage) {
+		WCHAR ps[64];
+		FormatBytes(info->photoUsage, ru, ps, 64);
+		swprintf_s(line, ru ? L"Фото: %s\r\n" : L"Photos: %s\r\n", ps);
+		wcslcat(out, line, outcch);
+	}
+	if (info->appUsage) {
+		WCHAR as[64];
+		FormatBytes(info->appUsage, ru, as, 64);
+		swprintf_s(line, ru ? L"Приложения: %s\r\n" : L"Apps: %s\r\n", as);
 		wcslcat(out, line, outcch);
 	}
 }

@@ -1165,6 +1165,8 @@ BOOL AppleMdFillInfo(LPCWSTR deviceName, PluginDeviceInfo* info)
 		return FALSE;
 	memset(info, 0, sizeof(*info));
 	info->battery=-1;
+	info->batteryHealth=-1;
+	info->batteryCycles=-1;
 	AppleLock();
 	ApplePhone* p=FindPhoneByName(deviceName);
 	if (!p) {
@@ -1172,7 +1174,6 @@ BOOL AppleMdFillInfo(LPCWSTR deviceName, PluginDeviceInfo* info)
 		return FALSE;
 	}
 	wcslcpy(info->manufacturer, L"Apple", 128);
-	wcslcpy(info->model, p->product[0] ? p->product : p->name, 128);
 	if (p->ios[0] && p->build[0])
 		swprintf_s(info->firmware, countof(info->firmware), L"%s (%s)", p->ios, p->build);
 	else if (p->ios[0])
@@ -1183,11 +1184,58 @@ BOOL AppleMdFillInfo(LPCWSTR deviceName, PluginDeviceInfo* info)
 		swprintf_s(info->os, countof(info->os), L"iOS %s", p->ios);
 
 	EnsureLockdown(p);
+	/* Prefer human MarketingName when lockdown provides it; else ProductType. */
+	CopyValue(p->dev, "MarketingName", info->model, 128);
+	if (!info->model[0])
+		wcslcpy(info->model, p->product[0] ? p->product : p->name, 128);
+
+	CopyValue(p->dev, "SerialNumber", info->serial, 64);
+	CopyValue(p->dev, "InternationalMobileEquipmentIdentity", info->imei, 64);
+	CopyValue(p->dev, "InternationalMobileEquipmentIdentity2", info->imei2, 64);
+
+	static const char* batDom="com.apple.mobile.battery";
 	int bat=CopyValueInt(p->dev, NULL, "BatteryCurrentCapacity");
 	if (bat<0 || bat>100)
-		bat=CopyValueInt(p->dev, "com.apple.mobile.battery", "BatteryCurrentCapacity");
+		bat=CopyValueInt(p->dev, batDom, "BatteryCurrentCapacity");
 	if (bat>=0 && bat<=100)
 		info->battery=bat;
+
+	/* CycleCount — omit if missing. Tried also BatteryCycleCount (not used if absent). */
+	int cycles=CopyValueInt(p->dev, batDom, "CycleCount");
+	if (cycles<0)
+		cycles=CopyValueInt(p->dev, batDom, "BatteryCycleCount");
+	if (cycles>=0)
+		info->batteryCycles=cycles;
+
+	/*
+	 * Maximum capacity % from DesignCapacity vs AppleRawMaxCapacity /
+	 * NominalChargeCapacity / MaxCapacity. Direct keys tried (omit if absent):
+	 * MaximumCapacityPercent, BatteryHealth, GasGaugeBatteryHealth.
+	 * Do not claim health if design/max unavailable.
+	 */
+	int directHealth=CopyValueInt(p->dev, batDom, "MaximumCapacityPercent");
+	if (directHealth<0 || directHealth>100)
+		directHealth=CopyValueInt(p->dev, batDom, "BatteryHealth");
+	if (directHealth<0 || directHealth>100)
+		directHealth=CopyValueInt(p->dev, batDom, "GasGaugeBatteryHealth");
+	if (directHealth>=0 && directHealth<=100)
+		info->batteryHealth=directHealth;
+	else {
+		ULONGLONG design=0, maxc=0;
+		CopyValueU64(p->dev, batDom, "DesignCapacity", &design);
+		if (!CopyValueU64(p->dev, batDom, "AppleRawMaxCapacity", &maxc))
+			if (!CopyValueU64(p->dev, batDom, "NominalChargeCapacity", &maxc))
+				CopyValueU64(p->dev, batDom, "MaxCapacity", &maxc);
+		info->designCapacity=design;
+		info->maxCapacity=maxc;
+		if (design>0 && maxc>0) {
+			double pct=100.0*(double)maxc/(double)design;
+			int h=(int)(pct+0.5);
+			if (h<0) h=0;
+			if (h>100) h=100;
+			info->batteryHealth=h;
+		}
+	}
 
 	ULONGLONG cap=0, freeb=0;
 	if (EnsureSession(p) && p->afc && pAFCDeviceInfoOpen && pAFCKeyValueRead) {
@@ -1207,10 +1255,56 @@ BOOL AppleMdFillInfo(LPCWSTR deviceName, PluginDeviceInfo* info)
 			AfcDictClose(dict);
 		}
 	}
+
+	/* disk_usage (+ .factory fallback). Photo/app keys tried if present. */
+	static const char* diskDom="com.apple.disk_usage";
+	static const char* diskFactory="com.apple.disk_usage.factory";
+	ULONGLONG totalDisk=0, dataCap=0, dataAvail=0, sysCap=0, sysAvail=0;
+	ULONGLONG photo=0, apps=0;
+	CopyValueU64(p->dev, diskDom, "TotalDiskCapacity", &totalDisk);
+	if (!totalDisk)
+		CopyValueU64(p->dev, diskFactory, "TotalDiskCapacity", &totalDisk);
+	CopyValueU64(p->dev, diskDom, "TotalDataCapacity", &dataCap);
+	if (!dataCap)
+		CopyValueU64(p->dev, diskFactory, "TotalDataCapacity", &dataCap);
+	if (!CopyValueU64(p->dev, diskDom, "TotalDataAvailable", &dataAvail))
+		if (!CopyValueU64(p->dev, diskDom, "AmountDataAvailable", &dataAvail))
+			if (!CopyValueU64(p->dev, diskFactory, "TotalDataAvailable", &dataAvail))
+				CopyValueU64(p->dev, diskFactory, "AmountDataAvailable", &dataAvail);
+	CopyValueU64(p->dev, diskDom, "TotalSystemCapacity", &sysCap);
+	if (!sysCap)
+		CopyValueU64(p->dev, diskFactory, "TotalSystemCapacity", &sysCap);
+	CopyValueU64(p->dev, diskDom, "TotalSystemAvailable", &sysAvail);
+	if (!sysAvail)
+		CopyValueU64(p->dev, diskFactory, "TotalSystemAvailable", &sysAvail);
+	/* Optional usage keys — skip silently when lockdown omits them. */
+	if (!CopyValueU64(p->dev, diskDom, "PhotoDataUsage", &photo))
+		if (!CopyValueU64(p->dev, diskDom, "PhotoUsage", &photo))
+			CopyValueU64(p->dev, diskFactory, "PhotoDataUsage", &photo);
+	if (!CopyValueU64(p->dev, diskDom, "MobileApplicationUsage", &apps))
+		if (!CopyValueU64(p->dev, diskDom, "AppUsage", &apps))
+			CopyValueU64(p->dev, diskFactory, "MobileApplicationUsage", &apps);
+
+	info->totalDisk=totalDisk;
+	info->dataCapacity=dataCap;
+	info->dataAvailable=dataAvail;
+	info->systemCapacity=sysCap;
+	info->systemAvailable=sysAvail;
+	info->photoUsage=photo;
+	info->appUsage=apps;
+
 	if (!cap && !freeb) {
-		CopyValueU64(p->dev, "com.apple.disk_usage", "TotalDiskCapacity", &cap);
-		if (!CopyValueU64(p->dev, "com.apple.disk_usage", "TotalDataAvailable", &freeb))
-			CopyValueU64(p->dev, "com.apple.disk_usage", "AmountDataAvailable", &freeb);
+		if (totalDisk)
+			cap=totalDisk;
+		else if (dataCap)
+			cap=dataCap;
+		if (dataAvail)
+			freeb=dataAvail;
+		else {
+			CopyValueU64(p->dev, diskDom, "TotalDiskCapacity", &cap);
+			if (!CopyValueU64(p->dev, diskDom, "TotalDataAvailable", &freeb))
+				CopyValueU64(p->dev, diskDom, "AmountDataAvailable", &freeb);
+		}
 	}
 	if (cap || freeb) {
 		int n=info->nstor;

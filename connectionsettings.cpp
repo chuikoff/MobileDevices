@@ -123,13 +123,13 @@ static BOOL CALLBACK DeviceInfoDlg(HWND hDlg, UINT message, WPARAM wParam, LPARA
 		{
 			int lang=GetPluginUiLanguage();
 			SetWindowTextW(hDlg, SettingsName[0] ? SettingsName : PLUGIN_DISPLAY_NAME_W);
-			WCHAR text[2048];
+			WCHAR text[4096];
 			if (g_dlgInfoOk)
-				FormatDeviceInfo(lang, &g_dlgInfo, text, 2048);
+				FormatDeviceInfo(lang, &g_dlgInfo, text, 4096);
 			else
 				wcslcpy(text, lang==UI_LANG_RU
 					? L"Не удалось прочитать сведения об устройстве."
-					: L"Could not read device information.", 2048);
+					: L"Could not read device information.", 4096);
 			SetDlgItemTextW(hDlg, IDC_DEVICE_INFO, text);
 			SetDlgItemTextW(hDlg, IDOK, lang==UI_LANG_RU ? L"ОК" : L"OK");
 			SetWindowTheme(hDlg, L"Explorer", NULL);
