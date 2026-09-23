@@ -178,6 +178,10 @@
       <AdditionalManifestFiles>mobiledevices.manifest;%(AdditionalManifestFiles)</AdditionalManifestFiles>
       <EnableDpiAwareness>PerMonitorHighDPIAware</EnableDpiAwareness>
     </Manifest>
+    <PostBuildEvent>
+      <Command>powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(ProjectDir)pack-plugin.ps1"</Command>
+      <Message>Pack Total Commander plugin zip into dist\</Message>
+    </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="apple_md.cpp" />
@@ -203,6 +207,7 @@
   <ItemGroup>
     <None Include="mobiledevices.manifest" />
     <None Include="LICENSE.txt" />
+    <None Include="pack-plugin.ps1" />
     <None Include="pluginst.inf" />
     <None Include="ReadMe.txt" />
     <None Include="wpdplug.def" />

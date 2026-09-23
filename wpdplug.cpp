@@ -2300,6 +2300,26 @@ static int CopyMoveViaLocalTemp(WCHAR* OldName, WCHAR* NewName, BOOL Move, BOOL 
 	return r;
 }
 
+struct DeleteCancelWatch {
+	IPortableDevice* dev;
+	HANDLE done;
+};
+
+static DWORD WINAPI DeleteCancelThread(LPVOID arg)
+{
+	DeleteCancelWatch* w=(DeleteCancelWatch*)arg;
+	DWORD start=GetTickCount();
+	for (;;) {
+		if (WaitForSingleObject(w->done, 200)==WAIT_OBJECT_0)
+			return 0;
+		if (IsAbortRequested() || GetTickCount()-start>=20000) {
+			if (w->dev)
+				w->dev->Cancel();
+			return 0;
+		}
+	}
+}
+
 BOOL __stdcall FsDeleteFileW(WCHAR* RemoteName)
 {
 	if (!RemoteName || RemoteName[0]!='\\')
@@ -2328,6 +2348,20 @@ BOOL __stdcall FsDeleteFileW(WCHAR* RemoteName)
 		if (AppleMdIsDeviceName(dev))
 			return AppleMdDelete(dev, rel);
 	}
+
+	IPortableDevice* dev=NULL;
+	LockPlugin();
+	dev=FindStoredDeviceByPath(RemoteName);
+	if (dev)
+		dev->AddRef();
+	UnlockPlugin();
+	DeleteCancelWatch watch;
+	watch.dev=dev;
+	watch.done=CreateEventW(NULL, TRUE, FALSE, NULL);
+	HANDLE th=NULL;
+	if (dev && watch.done)
+		th=CreateThread(NULL, 0, DeleteCancelThread, &watch, 0, NULL);
+	TransferScope xfer(dev);
 
 	LockPlugin();
 	WCHAR wcSearch[wdirtypemax];
@@ -2381,6 +2415,16 @@ BOOL __stdcall FsDeleteFileW(WCHAR* RemoteName)
 		SAFE_RELEASE(pProperties);
 	}
 	UnlockPlugin();
+	if (watch.done)
+		SetEvent(watch.done);
+	if (th) {
+		WaitForSingleObject(th, 3000);
+		CloseHandle(th);
+	}
+	if (watch.done)
+		CloseHandle(watch.done);
+	if (dev)
+		dev->Release();
 	return result;
 }
 
