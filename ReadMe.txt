@@ -1,4 +1,4 @@
-Mobile Devices plugin v0.9.42
+Mobile Devices plugin v0.9.48
 =======================
 Modified from Windows Media Audio 2 (wpdplug) by Christian Ghisler.
 
@@ -35,13 +35,17 @@ Installation: open this archive in Total Commander.
 3. Полный доступ к Android по MTP: просмотр, копирование, перенос,
    удаление, переименование, папки.
 4. Управление файлами на iPhone / iPad.
-5. Фото на iPhone (DCIM / AFC).
+5. Фото iPhone по альбомам (Все фото, Избранное, Селфи, Снимки
+   экрана, свои альбомы) и по месяцам, с датой съёмки и эскизами.
+   Первое открытие читает библиотеку Photos и запоминает её.
+   Удаление убирает снимок из списка. Если библиотека недоступна —
+   список без папок 100APPLE и .THMB.
 6. Applications — только приложения с File Sharing / Файлы.
 7. Копирование и удаление файлов документов этих приложений.
-8. Папка Panic Logs на iPhone (crash-логи).
+8. Папка Logs на iPhone (crash-логи). Старый путь Panic Logs тоже открывается.
 9. Карточка устройства: ОС, модель, производитель, серийный номер,
    IMEI, батарея / здоровье / циклы, протокол, свободно / ёмкость,
-   разбивка System/Data и фото/приложения (если lockdown отдаёт).
+   разбивка система / данные / очищаемое и фото/приложения (если lockdown отдаёт).
 10. В корне только телефоны (без принтеров, сканеров, WIA,
     заглушек Apple MTP).
 11. Миниатюры файлов в режиме эскизов Total Commander.
@@ -60,12 +64,16 @@ Features
 3. Full Android MTP access: browse, copy, move, delete, rename,
    create folders.
 4. Manage files on iPhone / iPad.
-5. iPhone Photos (DCIM / AFC).
+5. iPhone photos by album (All Photos, Favorites, Selfies,
+   Screenshots, user albums) and by month, with the capture date
+   and thumbnails. The first open reads the Photos library and
+   keeps it. Delete removes the photo from the list. If it cannot
+   be read, the list hides 100APPLE and .THMB folders.
 6. Applications — only apps with iOS File Sharing / Files access.
 7. Copy and delete that app's document files.
-8. Panic Logs folder on iPhone.
+8. Logs folder on iPhone (crash logs). The old Panic Logs path still opens.
 9. Device info: OS, model, manufacturer, serial, IMEI, battery /
-   health / cycles, protocol, free / capacity, System/Data breakdown
+   health / cycles, protocol, free / capacity, system / data / purgeable
    and photo/app usage when lockdown provides them.
 10. Plugin root shows phones only (no printers, scanners, WIA,
     Apple MTP stubs).

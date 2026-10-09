@@ -96,7 +96,8 @@ typedef struct {
 	/* Apple disk_usage detail (0 = unset / hide) */
 	ULONGLONG totalDisk;
 	ULONGLONG dataCapacity;
-	ULONGLONG dataAvailable;
+	ULONGLONG dataAvailable;  /* TotalDataAvailable: free plus purgeable */
+	ULONGLONG purgeable;      /* dataAvailable minus the free line; 0 = hide */
 	ULONGLONG systemCapacity;
 	ULONGLONG systemAvailable;
 	ULONGLONG photoUsage;

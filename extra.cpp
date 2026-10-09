@@ -377,11 +377,53 @@ static HBITMAP ScaleBitmapKeepAspect(Gdiplus::Bitmap* src, int maxW, int maxH)
 	return hb;
 }
 
+static int ApplePhotoPreview(WCHAR* RemoteName, int width, int height, HBITMAP* ReturnedBitmap)
+{
+	const WCHAR* p=RemoteName[0]=='\\' ? RemoteName+1 : RemoteName;
+	if (!p[0])
+		return -1;
+	WCHAR dev[MAX_PATH];
+	wcslcpy(dev, p, MAX_PATH);
+	WCHAR* sl=wcschr(dev, '\\');
+	WCHAR rel[wdirtypemax];
+	rel[0]=0;
+	if (sl) {
+		wcslcpy(rel, sl+1, wdirtypemax);
+		sl[0]=0;
+	}
+	if (!dev[0] || !AppleMdIsDeviceName(dev))
+		return -1;
+	WCHAR jpeg[MAX_PATH];
+	jpeg[0]=0;
+	if (!rel[0] || !AppleMdLoadPhotoThumb(dev, rel, jpeg, MAX_PATH))
+		return FS_BITMAP_NONE;
+	if (!GdiPlusInitialize())
+		return FS_BITMAP_NONE;
+	if (width<1)
+		width=256;
+	if (height<1)
+		height=256;
+	Gdiplus::Bitmap* bmp=Gdiplus::Bitmap::FromFile(jpeg, FALSE);
+	if (!bmp || bmp->GetLastStatus()!=Gdiplus::Ok) {
+		delete bmp;
+		return FS_BITMAP_NONE;
+	}
+	HBITMAP hb=ScaleBitmapKeepAspect(bmp, width, height);
+	delete bmp;
+	if (!hb)
+		return FS_BITMAP_NONE;
+	*ReturnedBitmap=hb;
+	return FS_BITMAP_EXTRACTED | FS_BITMAP_CACHE;
+}
+
 int __stdcall FsGetPreviewBitmapW(WCHAR* RemoteName,int width,int height,HBITMAP* ReturnedBitmap)
 {
 	if (!ReturnedBitmap || !RemoteName || RemoteName[0]!='\\')
 		return FS_BITMAP_NONE;
 	*ReturnedBitmap=NULL;
+	int apple=ApplePhotoPreview(RemoteName, width, height, ReturnedBitmap);
+	if (apple!=-1)
+		return apple;
 	ComApartmentGuard comApt;
 	if (!comApt.ok())
 		return FS_BITMAP_NONE;

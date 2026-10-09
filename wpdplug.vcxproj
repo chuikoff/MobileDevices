@@ -185,6 +185,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="apple_md.cpp" />
+    <ClCompile Include="apple_photos.cpp" />
     <ClCompile Include="connectionsettings.cpp" />
     <ClCompile Include="cunicode.cpp" />
     <ClCompile Include="extra.cpp" />
@@ -195,6 +196,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="apple_md.h" />
+    <ClInclude Include="apple_photos.h" />
     <ClInclude Include="connectionsettings.h" />
     <ClInclude Include="cunicode.h" />
     <ClInclude Include="fsplugin.h" />
@@ -216,9 +218,9 @@
     <ResourceCompile Include="wpdplug.rc" />
   </ItemGroup>
   <ItemGroup>
-    <Image Include="ICONROOT.ICO" />
-    <Image Include="ICONANDROID.ICO" />
-    <Image Include="ICONIPHONE.ICO" />
+    <Image Include="MobileDevices-icons\ICONROOT.ICO" />
+    <Image Include="MobileDevices-icons\ICONANDROID.ICO" />
+    <Image Include="MobileDevices-icons\ICONIPHONE.ICO" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets" />

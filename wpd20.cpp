@@ -410,7 +410,7 @@ void FormatDeviceInfo(int lang, const PluginDeviceInfo* info, WCHAR* out, int ou
 	}
 	/* Apple disk_usage breakdown when detail fields are set. */
 	if (info->systemCapacity || info->dataCapacity || info->totalDisk) {
-		WCHAR usedS[64], usedD[64], freeS[64];
+		WCHAR usedS[64], usedD[64], freeS[64], purS[64];
 		if (info->systemCapacity) {
 			ULONGLONG used=info->systemCapacity;
 			if (info->systemAvailable && info->systemAvailable<=info->systemCapacity)
@@ -427,10 +427,19 @@ void FormatDeviceInfo(int lang, const PluginDeviceInfo* info, WCHAR* out, int ou
 			swprintf_s(line, ru ? L"Данные: %s\r\n" : L"Data: %s\r\n", usedD);
 			wcslcat(out, line, outcch);
 		}
-		ULONGLONG freeb=info->dataAvailable;
-		if (!freeb && info->nstor>0)
+		/* Hide a sub-megabyte gap; it is rounding, not a cache bucket. */
+		if (info->purgeable>=1024ULL*1024ULL) {
+			FormatBytes(info->purgeable, ru, purS, 64);
+			swprintf_s(line, ru ? L"Очищаемое: %s\r\n" : L"Purgeable: %s\r\n", purS);
+			wcslcat(out, line, outcch);
+		}
+		/* Same figure as the header. dataAvailable still includes purgeable. */
+		ULONGLONG freeb=0;
+		if (info->nstor>0)
 			freeb=info->stor[0].freeBytes;
-		if (freeb) {
+		else if (info->dataAvailable>info->purgeable)
+			freeb=info->dataAvailable-info->purgeable;
+		if (freeb || info->purgeable>=1024ULL*1024ULL) {
 			FormatBytes(freeb, ru, freeS, 64);
 			swprintf_s(line, ru ? L"Свободно: %s\r\n" : L"Free: %s\r\n", freeS);
 			wcslcat(out, line, outcch);

@@ -14,6 +14,8 @@ BOOL AppleMdFindNext(HANDLE h, WIN32_FIND_DATAW* fd);
 void AppleMdFindClose(HANDLE h);
 int AppleMdGetFile(LPCWSTR deviceName, LPCWSTR relPath, LPCWSTR localPath,
 	ULONGLONG totalHint, FILETIME* mtime);
+/* 1 when localJpeg is a cached thumbnail for an iPhone Photos file. */
+int AppleMdLoadPhotoThumb(LPCWSTR deviceName, LPCWSTR relPath, WCHAR* localJpeg, int cch);
 int AppleMdPutFile(LPCWSTR deviceName, LPCWSTR relPath, LPCWSTR localPath, BOOL overwrite);
 BOOL AppleMdDelete(LPCWSTR deviceName, LPCWSTR relPath);
 BOOL AppleMdMkDir(LPCWSTR deviceName, LPCWSTR relPath);
