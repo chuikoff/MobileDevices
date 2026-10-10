@@ -200,6 +200,151 @@ static void FormatBytes(ULONGLONG n, int lang, WCHAR* buf, int cch)
 		swprintf_s(buf, cch, lang ? L"%llu байт" : L"%llu bytes", n);
 }
 
+/* AOSP puts "1.0" in the MTP device-version field. That is not the Android release. */
+static BOOL IsPlaceholderOsVersion(const WCHAR* s)
+{
+	if (!s || !s[0])
+		return TRUE;
+	return _wcsicmp(s, L"1")==0 || _wcsicmp(s, L"1.0")==0 || _wcsicmp(s, L"1.0.0")==0
+		|| _wcsicmp(s, L"0")==0 || _wcsicmp(s, L"0.0")==0 || _wcsicmp(s, L"0.0.0")==0
+		|| _wcsicmp(s, L"unknown")==0 || _wcsicmp(s, L"none")==0 || _wcsicmp(s, L"n/a")==0
+		|| _wcsicmp(s, L"mtp")==0 || _wcsicmp(s, L"android")==0;
+}
+
+static void TrimTrailingDotZero(WCHAR* s)
+{
+	if (!s)
+		return;
+	for (;;) {
+		int n=(int)wcslen(s);
+		if (n>=2 && s[n-2]==L'.' && s[n-1]==L'0')
+			s[n-2]=0;
+		else
+			break;
+	}
+}
+
+/* 4..20, optional .minor and .patch. Rejects the AOSP placeholder 1.0. */
+static BOOL LooksLikeAndroidRelease(const WCHAR* s)
+{
+	const WCHAR* p;
+	int major=0;
+	int dots=0;
+	if (!s || !s[0])
+		return FALSE;
+	p=s;
+	if (*p<L'0' || *p>L'9')
+		return FALSE;
+	while (*p>=L'0' && *p<=L'9') {
+		major=major*10+(*p-L'0');
+		if (major>20)
+			return FALSE;
+		p++;
+	}
+	if (major<4 || major>20)
+		return FALSE;
+	while (*p==L'.') {
+		int part=0;
+		int digits=0;
+		p++;
+		dots++;
+		if (dots>2 || *p<L'0' || *p>L'9')
+			return FALSE;
+		while (*p>=L'0' && *p<=L'9') {
+			part=part*10+(*p-L'0');
+			digits++;
+			if (digits>2 || part>99)
+				return FALSE;
+			p++;
+		}
+	}
+	return *p==0;
+}
+
+static void NoteAndroidVersion(PluginDeviceInfo* info, const WCHAR* raw, BOOL bareNumber)
+{
+	WCHAR tmp[128];
+	const WCHAR* ver=NULL;
+	WCHAR rel[40];
+	int n;
+	if (!info || !raw || !raw[0])
+		return;
+	if (info->os[0] && _wcsicmp(info->os, L"Android")!=0)
+		return;
+	while (*raw==L' ' || *raw==L'\t')
+		raw++;
+	wcslcpy(tmp, raw, 128);
+	n=(int)wcslen(tmp);
+	while (n>0 && (tmp[n-1]==L' ' || tmp[n-1]==L'\t' || tmp[n-1]==L'\r' || tmp[n-1]==L'\n'))
+		tmp[--n]=0;
+	if (IsPlaceholderOsVersion(tmp))
+		return;
+	if (_wcsnicmp(tmp, L"android", 7)==0) {
+		const WCHAR* p=tmp+7;
+		if (*p==L' ' || *p==L'-' || *p==L':' || *p==L'/') {
+			while (*p==L' ' || *p==L'-' || *p==L':' || *p==L'/')
+				p++;
+			ver=p;
+		}
+	} else if (bareNumber && LooksLikeAndroidRelease(tmp))
+		ver=tmp;
+	if (!ver || !ver[0])
+		return;
+	wcslcpy(rel, ver, 40);
+	{
+		WCHAR* sp=wcspbrk(rel, L" \t(");
+		if (sp)
+			*sp=0;
+	}
+	TrimTrailingDotZero(rel);
+	if (!LooksLikeAndroidRelease(rel))
+		return;
+	swprintf_s(info->os, 40, L"Android %s", rel);
+}
+
+static void ScanAndroidVersionProps(IPortableDeviceProperties* props, PluginDeviceInfo* info)
+{
+	IPortableDeviceKeyCollection* all=NULL;
+	IPortableDeviceValues* vals=NULL;
+	DWORD count=0;
+	DWORD i;
+	int pass;
+	if (!props || !info)
+		return;
+	if (info->os[0] && _wcsicmp(info->os, L"Android")!=0)
+		return;
+	if (FAILED(props->GetSupportedProperties(WPD_DEVICE_OBJECT_ID, &all)) || !all) {
+		SAFE_RELEASE(all);
+		return;
+	}
+	if (FAILED(props->GetValues(WPD_DEVICE_OBJECT_ID, all, &vals)) || !vals) {
+		SAFE_RELEASE(all);
+		return;
+	}
+	SAFE_RELEASE(all);
+	if (FAILED(vals->GetCount(&count))) {
+		SAFE_RELEASE(vals);
+		return;
+	}
+	if (count>80)
+		count=80;
+	for (pass=0; pass<2; pass++) {
+		for (i=0; i<count; i++) {
+			PROPERTYKEY key;
+			PROPVARIANT pv;
+			PropVariantInit(&pv);
+			if (SUCCEEDED(vals->GetAt(i, &key, &pv)) && pv.vt==VT_LPWSTR && pv.pwszVal)
+				NoteAndroidVersion(info, pv.pwszVal, pass==1);
+			PropVariantClear(&pv);
+			if (info->os[0] && _wcsicmp(info->os, L"Android")!=0)
+				break;
+		}
+		if (info->os[0] && _wcsicmp(info->os, L"Android")!=0)
+			break;
+	}
+	SAFE_RELEASE(vals);
+}
+
 BOOL QueryDeviceInfo(LPCWSTR remoteName, PluginDeviceInfo* info)
 {
 	if (!info)
@@ -262,15 +407,31 @@ BOOL QueryDeviceInfo(LPCWSTR remoteName, PluginDeviceInfo* info)
 		keys->Add(WPD_DEVICE_MODEL);
 		keys->Add(WPD_DEVICE_PROTOCOL);
 		keys->Add(WPD_DEVICE_POWER_LEVEL);
+		keys->Add(WPD_DEVICE_FIRMWARE_VERSION);
+		keys->Add(WPD_DEVICE_SERIAL_NUMBER);
 		IPortableDeviceValues* v=NULL;
 		if (SUCCEEDED(props->GetValues(WPD_DEVICE_OBJECT_ID, keys, &v)) && v) {
+			WCHAR fw[128];
+			fw[0]=0;
 			CopyWpdString(v, WPD_DEVICE_MANUFACTURER, info->manufacturer, 128);
 			CopyWpdString(v, WPD_DEVICE_MODEL, info->model, 128);
 			if (!info->model[0])
 				CopyWpdString(v, WPD_DEVICE_FRIENDLY_NAME, info->model, 128);
-			info->firmware[0]=0;
+			CopyWpdString(v, WPD_DEVICE_FIRMWARE_VERSION, fw, 128);
+			CopyWpdString(v, WPD_DEVICE_SERIAL_NUMBER, info->serial, 64);
 			CopyWpdString(v, WPD_DEVICE_PROTOCOL, info->protocol, 80);
 			wcslcpy(info->os, L"Android", 40);
+			NoteAndroidVersion(info, fw, TRUE);
+			if (fw[0] && !IsPlaceholderOsVersion(fw)) {
+				BOOL onlyRelease=FALSE;
+				if (_wcsnicmp(info->os, L"Android ", 8)==0 &&
+					(_wcsicmp(fw, info->os+8)==0 || _wcsicmp(fw, info->os)==0))
+					onlyRelease=TRUE;
+				if (!onlyRelease)
+					wcslcpy(info->firmware, fw, 128);
+			}
+			if (_wcsicmp(info->os, L"Android")==0)
+				ScanAndroidVersionProps(props, info);
 			info->battery=ReadBatteryPercent(v);
 			SAFE_RELEASE(v);
 		}
@@ -358,9 +519,21 @@ void FormatDeviceInfo(int lang, const PluginDeviceInfo* info, WCHAR* out, int ou
 		swprintf_s(line, ru ? L"Производитель: %s\r\n" : L"Manufacturer: %s\r\n", info->manufacturer);
 		wcslcat(out, line, outcch);
 	}
-	if (info->firmware[0] && _wcsnicmp(info->os, L"Android", 7)!=0) {
-		swprintf_s(line, ru ? L"Прошивка: %s\r\n" : L"Firmware: %s\r\n", info->firmware);
-		wcslcat(out, line, outcch);
+	if (info->firmware[0]) {
+		BOOL same=FALSE;
+		const WCHAR* osVer=NULL;
+		if (info->os[0] && _wcsicmp(info->os, info->firmware)==0)
+			same=TRUE;
+		if (_wcsnicmp(info->os, L"Android ", 8)==0)
+			osVer=info->os+8;
+		else if (_wcsnicmp(info->os, L"iOS ", 4)==0)
+			osVer=info->os+4;
+		if (osVer && _wcsicmp(osVer, info->firmware)==0)
+			same=TRUE;
+		if (!same) {
+			swprintf_s(line, ru ? L"Прошивка: %s\r\n" : L"Firmware: %s\r\n", info->firmware);
+			wcslcat(out, line, outcch);
+		}
 	}
 	if (info->serial[0]) {
 		swprintf_s(line, ru ? L"Серийный номер: %s\r\n" : L"Serial: %s\r\n", info->serial);

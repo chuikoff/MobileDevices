@@ -465,6 +465,9 @@ static HRESULT CreateWpdClientInfo(IPortableDeviceValues** ppClientInfo, DWORD d
 	info->SetUnsignedIntegerValue(WPD_CLIENT_SECURITY_QUALITY_OF_SERVICE, SECURITY_IMPERSONATION);
 	info->SetUnsignedIntegerValue(WPD_CLIENT_DESIRED_ACCESS, desiredAccess);
 	info->SetUnsignedIntegerValue(WPD_CLIENT_SHARE_MODE, FILE_SHARE_READ | FILE_SHARE_WRITE);
+	// Same cookie Explorer uses. Without it, WUDFHost rebuilds its MTP cache
+	// inside IPortableDeviceContent::Delete and the call never finishes.
+	info->SetStringValue(WPD_CLIENT_EVENT_COOKIE, L"{35786D3C-B075-49B9-88DD-029876E11C01}");
 	*ppClientInfo=info;
 	return S_OK;
 }
@@ -2305,19 +2308,133 @@ struct DeleteCancelWatch {
 	HANDLE done;
 };
 
+static void WpdTrace(const char* line)
+{
+	char path[MAX_PATH];
+	DWORD n;
+	FILE* f=NULL;
+	if (!line)
+		return;
+	n=GetTempPathA(MAX_PATH, path);
+	if (!n || n>=MAX_PATH-24)
+		return;
+	strcat_s(path, "mobiledevices.log");
+	if (fopen_s(&f, path, "a")!=0 || !f)
+		return;
+	fputs(line, f);
+	fputc('\n', f);
+	fclose(f);
+}
+
 static DWORD WINAPI DeleteCancelThread(LPVOID arg)
 {
 	DeleteCancelWatch* w=(DeleteCancelWatch*)arg;
 	DWORD start=GetTickCount();
+	HRESULT com=CoInitializeEx(NULL, COINIT_MULTITHREADED);
 	for (;;) {
 		if (WaitForSingleObject(w->done, 200)==WAIT_OBJECT_0)
-			return 0;
-		if (IsAbortRequested() || GetTickCount()-start>=20000) {
+			break;
+		// A cold Android MTP stack can spend one or two minutes on the first
+		// delete. Cancel only a real hang, or an explicit abort.
+		if (IsAbortRequested() || GetTickCount()-start>=180000) {
+			WpdTrace("wpd delete cancel");
 			if (w->dev)
 				w->dev->Cancel();
-			return 0;
+			break;
 		}
 	}
+	if (SUCCEEDED(com))
+		CoUninitialize();
+	return 0;
+}
+
+static BOOL WpdDeleteSucceeded(HRESULT hr, IPortableDevicePropVariantCollection* results)
+{
+	DWORD i, n=0;
+	if (hr==S_OK)
+		return TRUE;
+	if (hr!=S_FALSE || !results)
+		return FALSE;
+	if (FAILED(results->GetCount(&n)) || n==0)
+		return FALSE;
+	for (i=0;i<n;i++) {
+		PROPVARIANT pv;
+		HRESULT item=E_FAIL;
+		PropVariantInit(&pv);
+		if (FAILED(results->GetAt(i, &pv)))
+			return FALSE;
+		if (pv.vt==VT_ERROR)
+			item=pv.scode;
+		else if (pv.vt==VT_I4)
+			item=pv.lVal;
+		else if (pv.vt==VT_UI4)
+			item=(HRESULT)pv.ulVal;
+		PropVariantClear(&pv);
+		if (FAILED(item))
+			return FALSE;
+	}
+	return TRUE;
+}
+
+static HRESULT WpdDeleteObject(IPortableDeviceContent* content, LPCWSTR objectId)
+{
+	IPortableDevicePropVariantCollection* col=NULL;
+	PROPVARIANT pv;
+	HRESULT hr;
+	size_t len;
+	DWORD flags[2];
+	int attempt;
+	char line[160];
+	char id8[48];
+	if (!content || !objectId || !objectId[0])
+		return E_INVALIDARG;
+	hr=CoCreateInstance(CLSID_PortableDevicePropVariantCollection, NULL,
+		CLSCTX_INPROC_SERVER, IID_IPortableDevicePropVariantCollection, (VOID**)&col);
+	if (FAILED(hr) || !col)
+		return FAILED(hr) ? hr : E_FAIL;
+	PropVariantInit(&pv);
+	pv.vt=VT_LPWSTR;
+	len=wcslen(objectId)+1;
+	pv.pwszVal=(LPWSTR)CoTaskMemAlloc(len*sizeof(WCHAR));
+	if (!pv.pwszVal) {
+		SAFE_RELEASE(col);
+		return E_OUTOFMEMORY;
+	}
+	wcscpy_s(pv.pwszVal, len, objectId);
+	hr=col->Add(&pv);
+	PropVariantClear(&pv);
+	if (FAILED(hr)) {
+		SAFE_RELEASE(col);
+		return hr;
+	}
+	id8[0]=0;
+	if (WideCharToMultiByte(CP_UTF8, 0, objectId, -1, id8, (int)sizeof(id8)-1, NULL, NULL)<=0)
+		id8[0]=0;
+	id8[sizeof(id8)-1]=0;
+	// Android accepts the same recursive delete Explorer and PortaDev send.
+	// NO_RECURSION is the fallback for devices that reject the recursive flag.
+	flags[0]=PORTABLE_DEVICE_DELETE_WITH_RECURSION;
+	flags[1]=PORTABLE_DEVICE_DELETE_NO_RECURSION;
+	hr=E_FAIL;
+	for (attempt=0; attempt<2; attempt++) {
+		IPortableDevicePropVariantCollection* results=NULL;
+		hr=content->Delete(flags[attempt], col, &results);
+		sprintf_s(line, "wpd delete hr=0x%08lX rec=%lu id=%s",
+			(unsigned long)hr, (unsigned long)flags[attempt], id8);
+		WpdTrace(line);
+		if (WpdDeleteSucceeded(hr, results)) {
+			SAFE_RELEASE(results);
+			SAFE_RELEASE(col);
+			return S_OK;
+		}
+		SAFE_RELEASE(results);
+		if (hr==HRESULT_FROM_WIN32(ERROR_NOT_FOUND)) {
+			SAFE_RELEASE(col);
+			return S_OK;
+		}
+	}
+	SAFE_RELEASE(col);
+	return FAILED(hr) ? hr : E_FAIL;
 }
 
 BOOL __stdcall FsDeleteFileW(WCHAR* RemoteName)
@@ -2380,39 +2497,28 @@ BOOL __stdcall FsDeleteFileW(WCHAR* RemoteName)
 		LPWSTR pStorageID=NULL;
 		LPWSTR pItemStorageID=NULL;
 		HRESULT hr = GetFolderIDFromPathName(wcSearch,&pEnumObjectIDs,&pProperties,&pDeviceContent,&pStorageID);
-		if (SUCCEEDED(hr)) {
-			int i=NameExistsInEnum(pEnumObjectIDs,p,pProperties,&pItemStorageID);
-			if (i!=0 && pItemStorageID) {
-				IPortableDevicePropVariantCollection* pCollection;
-				hr = CoCreateInstance(CLSID_PortableDevicePropVariantCollection,NULL,
-					CLSCTX_INPROC_SERVER,IID_IPortableDevicePropVariantCollection,(VOID**) &pCollection);
-				if (SUCCEEDED(hr)) {
-					PROPVARIANT pv = {0};
-					PropVariantInit(&pv);
-					pv.vt      = VT_LPWSTR;
-					int len=(int)wcslen(pItemStorageID)+1;
-					pv.pwszVal=(LPWSTR)CoTaskMemRealloc(NULL,len*sizeof(WCHAR));
-					wcscpy_s((LPWSTR)pv.pwszVal,len,pItemStorageID);
-					pCollection->Add(&pv);
-					hr = pDeviceContent->Delete(PORTABLE_DEVICE_DELETE_NO_RECURSION,pCollection,NULL);
-					if (SUCCEEDED(hr)) {
-						if (hr!=S_FALSE) {
-							RemoveFullPathFromCache(RemoteName);
-							result=true;
-						}
-					}
-					PropVariantClear(&pv);
-					SAFE_RELEASE(pCollection);
-				}
-			}
-		}
-		if (pItemStorageID)
-			CoTaskMemFree(pItemStorageID);
-		if (pStorageID)
-			CoTaskMemFree(pStorageID);
-		SAFE_RELEASE(pDeviceContent);
+		int kind=0;
+		if (SUCCEEDED(hr))
+			kind=NameExistsInEnum(pEnumObjectIDs,p,pProperties,&pItemStorageID);
+		// Close the parent listing before Delete. Android MTP serves one
+		// request at a time, and an open enumeration makes Delete do nothing.
 		SAFE_RELEASE(pEnumObjectIDs);
 		SAFE_RELEASE(pProperties);
+		if (pStorageID) {
+			CoTaskMemFree(pStorageID);
+			pStorageID=NULL;
+		}
+		if (kind!=0 && pItemStorageID && pDeviceContent) {
+			hr=WpdDeleteObject(pDeviceContent, pItemStorageID);
+			if (hr==S_OK) {
+				RemoveFullPathFromCache(RemoteName);
+				result=true;
+			}
+		} else
+			WpdTrace("wpd delete not found");
+		if (pItemStorageID)
+			CoTaskMemFree(pItemStorageID);
+		SAFE_RELEASE(pDeviceContent);
 	}
 	UnlockPlugin();
 	if (watch.done)
@@ -2831,21 +2937,8 @@ int __stdcall FsGetFileW(WCHAR* RemoteName,WCHAR* LocalName,int CopyFlags,Remote
 		}
 	}
 	if (result==FS_FILE_OK && Move && pDeviceContent && pItemStorageID) {
-		IPortableDevicePropVariantCollection* pDel=NULL;
-		HRESULT hrd=CoCreateInstance(CLSID_PortableDevicePropVariantCollection,NULL,
-			CLSCTX_INPROC_SERVER,IID_IPortableDevicePropVariantCollection,(VOID**)&pDel);
-		if (SUCCEEDED(hrd) && pDel) {
-			PROPVARIANT pv={0};
-			PropVariantInit(&pv);
-			pv.vt=VT_LPWSTR;
-			pv.pwszVal=pItemStorageID;
-			pDel->Add(&pv);
-			pv.pwszVal=NULL;
-			hrd=pDeviceContent->Delete(PORTABLE_DEVICE_DELETE_NO_RECURSION,pDel,NULL);
-			SAFE_RELEASE(pDel);
-			if (SUCCEEDED(hrd) && hrd!=S_FALSE)
-				RemoveFullPathFromCache(WRemoteName);
-		}
+		if (WpdDeleteObject(pDeviceContent, pItemStorageID)==S_OK)
+			RemoveFullPathFromCache(WRemoteName);
 	}
 	SAFE_RELEASE(pStream);
 	SAFE_RELEASE(pResources);
@@ -3017,30 +3110,16 @@ int __stdcall FsPutFileW(WCHAR* LocalName,WCHAR* RemoteName,int CopyFlags)
 		if (SUCCEEDED(hr)) {
 			// Make sure that there isn't already a file with that name!
 			int i=NameExistsInEnum(pEnumObjectIDs,p,pProperties,&pItemStorageID);
+			SAFE_RELEASE(pEnumObjectIDs);
+			SAFE_RELEASE(pProperties);
 			if (i==2)  // a folder?
 				result=FS_FILE_WRITEERROR;
 			else if (i==1 && !OverWrite)
 					result=FS_FILE_EXISTS;
 			else {
-				if (i==1) {    // file exists -> delete it!
-					IPortableDevicePropVariantCollection* pCollection;
-					hr = CoCreateInstance(CLSID_PortableDevicePropVariantCollection,NULL,
-						CLSCTX_INPROC_SERVER,IID_IPortableDevicePropVariantCollection,(VOID**) &pCollection);
-					if (SUCCEEDED(hr)) {
-						PROPVARIANT pv = {0};
-						PropVariantInit(&pv);
-						pv.vt      = VT_LPWSTR;
-						int len=(int)wcslen(pItemStorageID)+1;
-						pv.pwszVal=(LPWSTR)CoTaskMemRealloc(NULL,len*sizeof(WCHAR));
-						wcscpy_s((LPWSTR)pv.pwszVal,len,pItemStorageID);
-						pCollection->Add(&pv);
-						hr = pDeviceContent->Delete(PORTABLE_DEVICE_DELETE_NO_RECURSION,pCollection,NULL);
-						PropVariantClear(&pv);
-						SAFE_RELEASE(pCollection);
-						if (hr == S_FALSE)
-							hr=E_FAIL;
-					}
-				} else
+				if (i==1)
+					hr=WpdDeleteObject(pDeviceContent, pItemStorageID);
+				else
 					hr=S_OK;
 				if (SUCCEEDED(hr)) {
 					IPortableDeviceValues* pValues;

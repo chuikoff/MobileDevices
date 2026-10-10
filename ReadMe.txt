@@ -1,4 +1,4 @@
-Mobile Devices plugin v0.9.48
+Mobile Devices plugin v0.9.50
 =======================
 Modified from Windows Media Audio 2 (wpdplug) by Christian Ghisler.
 
@@ -43,7 +43,7 @@ Installation: open this archive in Total Commander.
 6. Applications — только приложения с File Sharing / Файлы.
 7. Копирование и удаление файлов документов этих приложений.
 8. Папка Logs на iPhone (crash-логи). Старый путь Panic Logs тоже открывается.
-9. Карточка устройства: ОС, модель, производитель, серийный номер,
+9. Карточка устройства: ОС и версия Android, модель, производитель, серийный номер,
    IMEI, батарея / здоровье / циклы, протокол, свободно / ёмкость,
    разбивка система / данные / очищаемое и фото/приложения (если lockdown отдаёт).
 10. В корне только телефоны (без принтеров, сканеров, WIA,
@@ -72,7 +72,7 @@ Features
 6. Applications — only apps with iOS File Sharing / Files access.
 7. Copy and delete that app's document files.
 8. Logs folder on iPhone (crash logs). The old Panic Logs path still opens.
-9. Device info: OS, model, manufacturer, serial, IMEI, battery /
+9. Device info: OS and Android version, model, manufacturer, serial, IMEI, battery /
    health / cycles, protocol, free / capacity, system / data / purgeable
    and photo/app usage when lockdown provides them.
 10. Plugin root shows phones only (no printers, scanners, WIA,
