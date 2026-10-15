@@ -1,4 +1,4 @@
-Mobile Devices plugin v0.9.50
+Mobile Devices plugin v0.9.51
 =======================
 Modified from Windows Media Audio 2 (wpdplug) by Christian Ghisler.
 
@@ -36,7 +36,7 @@ Installation: open this archive in Total Commander.
    удаление, переименование, папки.
 4. Управление файлами на iPhone / iPad.
 5. Фото iPhone по альбомам (Все фото, Избранное, Селфи, Снимки
-   экрана, свои альбомы) и по месяцам, с датой съёмки и эскизами.
+   экрана, свои альбомы), с датой съёмки и эскизами.
    Первое открытие читает библиотеку Photos и запоминает её.
    Удаление убирает снимок из списка. Если библиотека недоступна —
    список без папок 100APPLE и .THMB.
@@ -65,8 +65,8 @@ Features
    create folders.
 4. Manage files on iPhone / iPad.
 5. iPhone photos by album (All Photos, Favorites, Selfies,
-   Screenshots, user albums) and by month, with the capture date
-   and thumbnails. The first open reads the Photos library and
+   Screenshots, user albums), with the capture date and
+   thumbnails. The first open reads the Photos library and
    keeps it. Delete removes the photo from the list. If it cannot
    be read, the list hides 100APPLE and .THMB folders.
 6. Applications — only apps with iOS File Sharing / Files access.

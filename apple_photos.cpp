@@ -13,7 +13,8 @@
    Membership is Z_<n>ASSETS with columns Z_<digits>ALBUMS and Z_<digits>ASSETS.
    Thumbnails are PhotoData/Thumbnails/V2/<asset path>/5003.JPG (else 5005.JPG).
    The -wal is copied beside the db; SQLite rebuilds the missing -shm on open.
-   If the library cannot be read, DCIM is flattened and dot-folders are skipped.
+   If the library cannot be read, DCIM is flattened into All Photos and
+   dot-folders are skipped. Synthetic YYYY-MM date folders are not listed.
    A failed library is not downloaded again until Photos.sqlite changes. */
 
 enum {
@@ -901,68 +902,22 @@ static int CmpAlbumAsc(const void* a, const void* b)
 	return r-2;
 }
 
-static int CmpAlbumDesc(const void* a, const void* b)
-{
-	return -CmpAlbumAsc(a, b);
-}
-
-static BOOL IsYearMonth(const WCHAR* s)
-{
-	if (!s || wcslen(s)!=7 || s[4]!=L'-')
-		return FALSE;
-	for (int i=0;i<7;i++) {
-		if (i==4)
-			continue;
-		if (s[i]<L'0' || s[i]>L'9')
-			return FALSE;
-	}
-	return TRUE;
-}
-
 static void SortUserAlbums(PhotoLib* lib)
 {
 	int first=-1;
-	int year=0, other=0;
 	for (int i=0;i<lib->nalbums;i++) {
 		if (lib->albums[i].smart!=AL_USER)
 			continue;
-		if (first<0)
-			first=i;
-		if (IsYearMonth(lib->albums[i].name))
-			year++;
-		else
-			other++;
+		first=i;
+		break;
 	}
 	if (first<0 || first>=lib->nalbums)
 		return;
 	int n=lib->nalbums-first;
 	if (n<=1)
 		return;
-	qsort(lib->albums+first, (size_t)n, sizeof(PhotoAlbum),
-		(year>0 && other==0) ? CmpAlbumDesc : CmpAlbumAsc);
+	qsort(lib->albums+first, (size_t)n, sizeof(PhotoAlbum), CmpAlbumAsc);
 }
-
-static void SortMonthAlbums(PhotoLib* lib)
-{
-	int first=-1;
-	for (int i=0;i<lib->nalbums;i++) {
-		if (lib->albums[i].smart!=AL_MONTH)
-			continue;
-		first=i;
-		break;
-	}
-	if (first<0)
-		return;
-	int n=lib->nalbums-first;
-	for (int i=first;i<lib->nalbums;i++) {
-		if (lib->albums[i].smart!=AL_MONTH)
-			return;
-	}
-	if (n>1)
-		qsort(lib->albums+first, (size_t)n, sizeof(PhotoAlbum), CmpAlbumDesc);
-}
-
-static void AddMonthAlbums(PhotoLib* lib);
 
 static void FillSmart(PhotoLib* lib, int russian)
 {
@@ -1293,8 +1248,6 @@ static PhotoLib* BuildLibFromDb(const WCHAR* dbPath, int russian)
 	}
 	RemoveEmpty(lib);
 	SortUserAlbums(lib);
-	AddMonthAlbums(lib);
-	SortMonthAlbums(lib);
 	char line[80];
 	_snprintf_s(line, sizeof(line), _TRUNCATE, "photos sqlite assets=%d albums=%d",
 		lib->nassets, lib->nalbums);
@@ -1309,70 +1262,6 @@ static void FreeNames(char** names, int n)
 	for (int i=0;i<n;i++)
 		free(names[i]);
 	free(names);
-}
-
-static void YearFolder(const FILETIME* ft, WCHAR* out, int cch)
-{
-	out[0]=0;
-	if (!FtValid(ft))
-		return;
-	FILETIME local;
-	SYSTEMTIME st;
-	if (!FileTimeToLocalFileTime(ft, &local) || !FileTimeToSystemTime(&local, &st))
-		return;
-	swprintf_s(out, (size_t)cch, L"%04u-%02u", (unsigned)st.wYear, (unsigned)st.wMonth);
-}
-
-static BOOL AlbumNameUsed(PhotoLib* lib, const WCHAR* name)
-{
-	for (int i=0;i<lib->nalbums;i++) {
-		if (lib->albums[i].name && WcsIcmp(lib->albums[i].name, name)==0)
-			return TRUE;
-	}
-	return FALSE;
-}
-
-static PhotoAlbum* FindMonth(PhotoLib* lib, const WCHAR* year)
-{
-	for (int i=0;i<lib->nalbums;i++) {
-		if (lib->albums[i].smart==AL_MONTH && lib->albums[i].name &&
-			WcsIcmp(lib->albums[i].name, year)==0)
-			return &lib->albums[i];
-	}
-	return NULL;
-}
-
-static void AddMonthAlbums(PhotoLib* lib)
-{
-	if (!lib)
-		return;
-	for (int i=0;i<lib->nassets;i++) {
-		if (!InRoll(lib->assets[i].flags))
-			continue;
-		WCHAR year[16];
-		YearFolder(&lib->assets[i].when, year, 16);
-		if (!year[0])
-			continue;
-		PhotoAlbum* ya=FindMonth(lib, year);
-		if (!ya) {
-			if (AlbumNameUsed(lib, year))
-				continue;
-			ya=AddShell(lib, AL_MONTH, year);
-		}
-		if (!ya)
-			return;
-		AddToAlbum(ya, i, lib->assets[i].display, &lib->assets[i].when);
-	}
-}
-
-static PhotoAlbum* FindOrAddYear(PhotoLib* lib, const WCHAR* year)
-{
-	for (int i=0;i<lib->nalbums;i++) {
-		if (lib->albums[i].smart==AL_USER && lib->albums[i].name &&
-			WcsIcmp(lib->albums[i].name, year)==0)
-			return &lib->albums[i];
-	}
-	return AddShell(lib, AL_USER, year);
 }
 
 static PhotoAlbum* FindSmart(PhotoLib* lib, int smart)
@@ -1395,19 +1284,9 @@ static void AddDcimFile(PhotoLib* lib, const char* path, const char* file,
 	int idx=AddAsset(lib, 0, size, when, path, disp);
 	if (idx<0)
 		return;
-	/* Year folders realloc the album array, so resolve All Photos after that. */
-	WCHAR year[16];
-	YearFolder(when, year, 16);
-	if (year[0])
-		FindOrAddYear(lib, year);
 	PhotoAlbum* all=FindSmart(lib, AL_ALL);
 	if (all)
 		AddToAlbum(all, idx, lib->assets[idx].display, &lib->assets[idx].when);
-	if (year[0]) {
-		PhotoAlbum* ya=FindOrAddYear(lib, year);
-		if (ya)
-			AddToAlbum(ya, idx, lib->assets[idx].display, &lib->assets[idx].when);
-	}
 }
 
 static void WalkDcimDir(void* conn, PhotoLib* lib, const char* dirPath)
@@ -2458,7 +2337,7 @@ int main(int argc, char** argv)
 	Expect(lib!=NULL, "build");
 	if (!lib)
 		return 1;
-	Expect(lib->nalbums==13, "album count");
+	Expect(lib->nalbums==12, "album count");
 	Expect(lib->albums[0].name && wcscmp(lib->albums[0].name, L"Все фото")==0, "ru name");
 	PhotoAlbum* all=BySmart(lib, AL_ALL);
 	PhotoAlbum* fav=BySmart(lib, AL_FAV);
@@ -2491,22 +2370,8 @@ int main(int argc, char** argv)
 	char thumb[256];
 	Expect(BuildThumbAfc("DCIM/100APPLE/IMG_0001.HEIC", "5003.JPG", thumb, 256), "thumb build");
 	Expect(strcmp(thumb, "PhotoData/Thumbnails/V2/DCIM/100APPLE/IMG_0001.HEIC/5003.JPG")==0, "thumb path");
-	{
-		int months=0;
-		PhotoAlbum* month=NULL;
-		for (int i=0;i<lib->nalbums;i++) {
-			if (lib->albums[i].smart==AL_MONTH) {
-				months++;
-				month=&lib->albums[i];
-			}
-		}
-		WCHAR expectMonth[16];
-		YearFolder(&lib->assets[0].when, expectMonth, 16);
-		Expect(months==1 && month && month->n==11, "one month");
-		Expect(month && month->name && wcscmp(month->name, expectMonth)==0, "month name");
-		Expect(AlbumHasPath(lib, month, "DCIM/108APPLE/IMG_0099.HEIC"), "month has full dir");
-		Expect(!AlbumHasPath(lib, month, "PhotoData/CPLAssets/group1/IMG_0098.JPG"), "trash not in month");
-	}
+	for (int i=0;i<lib->nalbums;i++)
+		Expect(lib->albums[i].smart!=AL_MONTH, "no date folder");
 	Expect(!AlbumHasPath(lib, all, "DCIM/100APPLE/IMG_0004.HEIC"), "hidden not in roll");
 	Expect(!AlbumHasPath(lib, all, "DCIM/100APPLE/IMG_0005.HEIC"), "trash not in roll");
 	Expect(!AlbumHasPath(lib, all, "DCIM/100APPLE/IMG_0009.HEIC"), "skip not in roll");
