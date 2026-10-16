@@ -1,6 +1,13 @@
 #pragma once
 #include <windows.h>
 
+/* Same pair as apple_md.cpp next to ADNCI_MSG_*. Included here so the
+   photos selftest does not pull in the rest of the plugin. */
+#ifndef FT_NO_TIME_HIGH
+#define FT_NO_TIME_HIGH 0xFFFFFFFF
+#define FT_NO_TIME_LOW  0xFFFFFFFE
+#endif
+
 /* AFC callbacks supplied by apple_md.cpp. stat: 0 missing, 1 file, 2 directory, -1 error.
    pull: 0 success. list: malloc'd UTF-8 names, -1 on failure. */
 struct AppleAfcIo {

@@ -1,4 +1,4 @@
-Mobile Devices plugin v0.9.51
+Mobile Devices plugin v0.9.71
 =======================
 Modified from Windows Media Audio 2 (wpdplug) by Christian Ghisler.
 
@@ -22,6 +22,12 @@ iPhone: Apple Devices (Microsoft Store), not iTunes; 64-bit
 Total Commander.
 
 Settings: mobiledevices.ini next to the plugin (not fsplugin.ini).
+[MobileDevices] LogLevel=0 writes errors only (default). 1 also writes
+one outcome line. 2 writes every house_arrest probe. Normal fallbacks
+stay out of %TEMP%\mobiledevices.log at 0.
+[MobileDevices] LogLevel=0 — только ошибки (по умолчанию). 1 — ещё
+одна итоговая строка. 2 — каждая попытка house_arrest. Штатные
+фолбэки при 0 в %TEMP%\mobiledevices.log не пишутся.
 
 Installation: open this archive in Total Commander.
 

@@ -34,6 +34,9 @@ public:
 		return E_NOINTERFACE;
 	}
 	STDMETHODIMP_(ULONG) AddRef() { return InterlockedIncrement(&g_evRef); }
+	/* g_events is a process-lifetime static, not a heap object.
+	   Release only drops g_evRef and never deletes the callback,
+	   including when the count reaches zero. */
 	STDMETHODIMP_(ULONG) Release() { return InterlockedDecrement(&g_evRef); }
 	STDMETHODIMP OnEvent(IPortableDeviceValues* pEvent)
 	{

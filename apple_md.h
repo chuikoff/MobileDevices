@@ -5,6 +5,8 @@
 void AppleMdInit(void);
 void AppleMdShutdown(void);
 void AppleMdResetSessions(void);
+/* Plugin-root listing only. At most once a minute. */
+void AppleMdResetSessionsCached(void);
 int AppleMdCount(void);
 BOOL AppleMdGetName(int index, WCHAR* name, int cch);
 BOOL AppleMdIsDeviceName(LPCWSTR name);

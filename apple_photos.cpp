@@ -103,6 +103,27 @@ struct PhotoAsset {
 	WCHAR* display;
 };
 
+/* Open-addressed set of AFC paths. Slots point at strings owned elsewhere.
+   strcmp, not case-fold: a tombstone is an exact remote path. */
+struct PathSet {
+	char** key;
+	unsigned char* used;
+	int cap;
+	int n;
+	int failed;
+};
+
+/* Open-addressed set of display names. Built while an album is filled
+   and dropped afterwards. Equal names share a sort key, so the hash
+   matches WcsIcmp. */
+struct NameSet {
+	WCHAR** key;
+	unsigned char* used;
+	int cap;
+	int n;
+	int failed;
+};
+
 struct PhotoAlbum {
 	int smart;
 	WCHAR* name;
@@ -111,6 +132,7 @@ struct PhotoAlbum {
 	int n;
 	int cap;
 	FILETIME newest;
+	NameSet nameset;
 };
 
 struct PhotoLib {
@@ -129,6 +151,7 @@ struct PhotoLib {
 	PhotoAlbum* albums;
 	int ntomb, tombCap;
 	char** tombs;
+	PathSet tombset;
 	char** thumbMiss;
 	int nThumbMiss, thumbMissCap;
 };
@@ -136,6 +159,11 @@ struct PhotoLib {
 static AppleAfcIo g_io;
 static CRITICAL_SECTION g_cs;
 static volatile LONG g_csState=0;
+static CRITICAL_SECTION g_ioCs;
+static volatile LONG g_ioCsState=0;
+static HANDLE g_buildEvent=NULL;
+static volatile LONG g_buildBusy=0;
+static WCHAR g_buildKey[80];
 static PhotoLib* g_libs[8];
 static int g_nlibs=0;
 
@@ -167,6 +195,62 @@ static void PhUnlock(void)
 {
 	if (g_csState==2)
 		LeaveCriticalSection(&g_cs);
+}
+
+static void IoLock(void)
+{
+	for (;;) {
+		LONG s=g_ioCsState;
+		if (s==2) {
+			EnterCriticalSection(&g_ioCs);
+			return;
+		}
+		if (s==0 && InterlockedCompareExchange(&g_ioCsState, 1, 0)==0) {
+			InitializeCriticalSection(&g_ioCs);
+			InterlockedExchange(&g_ioCsState, 2);
+			EnterCriticalSection(&g_ioCs);
+			return;
+		}
+		Sleep(0);
+	}
+}
+
+static void IoUnlock(void)
+{
+	if (g_ioCsState==2)
+		LeaveCriticalSection(&g_ioCs);
+}
+
+static void WcsCopy(WCHAR* dst, int cch, const WCHAR* src);
+
+/* Called with PhLock held. Manual-reset event starts nonsignaled;
+   waiters block only while g_buildBusy is set. */
+static void BuildArm(const WCHAR* udid)
+{
+	if (!g_buildEvent)
+		g_buildEvent=CreateEventW(NULL, TRUE, FALSE, NULL);
+	g_buildBusy=1;
+	WcsCopy(g_buildKey, 80, udid ? udid : L"");
+	if (g_buildEvent)
+		ResetEvent(g_buildEvent);
+}
+
+static void BuildSignal(void)
+{
+	g_buildBusy=0;
+	g_buildKey[0]=0;
+	if (g_buildEvent)
+		SetEvent(g_buildEvent);
+}
+
+static void BuildWait(void)
+{
+	HANDLE ev=g_buildEvent;
+	PhUnlock();
+	if (ev)
+		WaitForSingleObject(ev, INFINITE);
+	else
+		Sleep(30);
 }
 
 static void WcsCopy(WCHAR* dst, int cch, const WCHAR* src)
@@ -239,13 +323,13 @@ static BOOL WideToUtf8(const WCHAR* w, char* u, int cch)
 
 static void FtNone(FILETIME* ft)
 {
-	ft->dwLowDateTime=0xFFFFFFFE;
-	ft->dwHighDateTime=0xFFFFFFFF;
+	ft->dwLowDateTime=FT_NO_TIME_LOW;
+	ft->dwHighDateTime=FT_NO_TIME_HIGH;
 }
 
 static BOOL FtValid(const FILETIME* ft)
 {
-	return ft && ft->dwHighDateTime!=0xFFFFFFFF;
+	return ft && ft->dwHighDateTime!=FT_NO_TIME_HIGH;
 }
 
 static BOOL FtFromUnix(unsigned long long sec, FILETIME* ft)
@@ -334,7 +418,20 @@ static void FreeAlbum(PhotoAlbum* al)
 			free(al->names[i]);
 		free(al->names);
 	}
+	free(al->nameset.key);
+	free(al->nameset.used);
 	memset(al, 0, sizeof(*al));
+}
+
+static void DropNameSets(PhotoLib* lib)
+{
+	if (!lib)
+		return;
+	for (int i=0;i<lib->nalbums;i++) {
+		free(lib->albums[i].nameset.key);
+		free(lib->albums[i].nameset.used);
+		memset(&lib->albums[i].nameset, 0, sizeof(lib->albums[i].nameset));
+	}
 }
 
 static void FreeLib(PhotoLib* lib)
@@ -358,6 +455,8 @@ static void FreeLib(PhotoLib* lib)
 			free(lib->tombs[i]);
 		free(lib->tombs);
 	}
+	free(lib->tombset.key);
+	free(lib->tombset.used);
 	if (lib->thumbMiss) {
 		for (int i=0;i<lib->nThumbMiss;i++)
 			free(lib->thumbMiss[i]);
@@ -705,7 +804,125 @@ static PhotoAlbum* AddShell(PhotoLib* lib, int smart, const WCHAR* name)
 	return al;
 }
 
-static BOOL NameTaken(PhotoAlbum* al, const WCHAR* name)
+static unsigned NameHash(const WCHAR* s)
+{
+	BYTE key[4096];
+	unsigned h=2166136261u;
+	if (!s)
+		s=L"";
+	int n=LCMapStringW(LOCALE_USER_DEFAULT, LCMAP_SORTKEY | NORM_IGNORECASE,
+		s, -1, (LPWSTR)key, (int)sizeof(key));
+	if (n<=0) {
+		for (; *s; s++) {
+			h^=(unsigned)*s;
+			h*=16777619u;
+		}
+		return h;
+	}
+	for (int i=0;i<n;i++) {
+		h^=key[i];
+		h*=16777619u;
+	}
+	return h;
+}
+
+static BOOL NameSetRehash(NameSet* s, int cap)
+{
+	WCHAR** key=(WCHAR**)calloc((size_t)cap, sizeof(WCHAR*));
+	unsigned char* used=(unsigned char*)calloc((size_t)cap, 1);
+	if (!key || !used || cap<=0 || (cap&(cap-1))!=0) {
+		free(key);
+		free(used);
+		return FALSE;
+	}
+	unsigned mask=(unsigned)cap-1u;
+	int placed=0;
+	for (int i=0; s->used && i<s->cap; i++) {
+		if (!s->used[i] || !s->key[i])
+			continue;
+		unsigned h=NameHash(s->key[i]);
+		int found=0;
+		for (int j=0;j<cap;j++) {
+			unsigned slot=(h+(unsigned)j)&mask;
+			if (!used[slot]) {
+				used[slot]=1;
+				key[slot]=s->key[i];
+				placed++;
+				found=1;
+				break;
+			}
+		}
+		if (!found) {
+			free(key);
+			free(used);
+			return FALSE;
+		}
+	}
+	if (placed!=s->n) {
+		free(key);
+		free(used);
+		return FALSE;
+	}
+	free(s->key);
+	free(s->used);
+	s->key=key;
+	s->used=used;
+	s->cap=cap;
+	return TRUE;
+}
+
+static void NameSetDisable(NameSet* s)
+{
+	if (!s)
+		return;
+	free(s->key);
+	free(s->used);
+	memset(s, 0, sizeof(*s));
+	s->failed=1;
+}
+
+static BOOL NameSetHas(const NameSet* s, const WCHAR* name)
+{
+	if (!s || !s->cap || !name)
+		return FALSE;
+	unsigned mask=(unsigned)s->cap-1u;
+	unsigned h=NameHash(name);
+	for (int i=0;i<s->cap;i++) {
+		unsigned slot=(h+(unsigned)i)&mask;
+		if (!s->used[slot])
+			return FALSE;
+		if (s->key[slot] && WcsIcmp(s->key[slot], name)==0)
+			return TRUE;
+	}
+	return FALSE;
+}
+
+static BOOL NameSetPut(NameSet* s, WCHAR* name)
+{
+	if (!s || !name || s->failed)
+		return FALSE;
+	if (s->cap<16 || s->n*2>=s->cap) {
+		int ncap=s->cap ? s->cap*2 : 16;
+		if (!NameSetRehash(s, ncap))
+			return FALSE;
+	}
+	unsigned mask=(unsigned)s->cap-1u;
+	unsigned h=NameHash(name);
+	for (int i=0;i<s->cap;i++) {
+		unsigned slot=(h+(unsigned)i)&mask;
+		if (!s->used[slot]) {
+			s->used[slot]=1;
+			s->key[slot]=name;
+			s->n++;
+			return TRUE;
+		}
+		if (s->key[slot] && WcsIcmp(s->key[slot], name)==0)
+			return TRUE;
+	}
+	return FALSE;
+}
+
+static BOOL NameTakenLinear(const PhotoAlbum* al, const WCHAR* name)
 {
 	for (int i=0;i<al->n;i++) {
 		if (al->names[i] && WcsIcmp(al->names[i], name)==0)
@@ -714,8 +931,21 @@ static BOOL NameTaken(PhotoAlbum* al, const WCHAR* name)
 	return FALSE;
 }
 
-static BOOL IdTaken(PhotoAlbum* al, int assetIndex)
+static BOOL NameTaken(const PhotoAlbum* al, const WCHAR* name)
 {
+	if (!al || !name)
+		return FALSE;
+	if (al->nameset.failed || !al->nameset.cap)
+		return NameTakenLinear(al, name);
+	return NameSetHas(&al->nameset, name);
+}
+
+static BOOL IdTaken(const PhotoAlbum* al, int assetIndex)
+{
+	/* Smart albums receive each asset index once, in order. A join row
+	   can name the same asset twice, so only user albums need the scan. */
+	if (!al || al->smart!=AL_USER)
+		return FALSE;
 	for (int i=0;i<al->n;i++) {
 		if (al->ids[i]==assetIndex)
 			return TRUE;
@@ -770,6 +1000,8 @@ static BOOL AddToAlbum(PhotoAlbum* al, int assetIndex, const WCHAR* display, con
 	al->ids[al->n]=assetIndex;
 	al->names[al->n]=dup;
 	al->n++;
+	if (!al->nameset.failed && !NameSetPut(&al->nameset, dup))
+		NameSetDisable(&al->nameset);
 	if (when && FtValid(when) && (!FtValid(&al->newest) || CompareFileTime(when, &al->newest)>0))
 		al->newest=*when;
 	return TRUE;
@@ -1248,6 +1480,7 @@ static PhotoLib* BuildLibFromDb(const WCHAR* dbPath, int russian)
 	}
 	RemoveEmpty(lib);
 	SortUserAlbums(lib);
+	DropNameSets(lib);
 	char line[80];
 	_snprintf_s(line, sizeof(line), _TRUNCATE, "photos sqlite assets=%d albums=%d",
 		lib->nassets, lib->nalbums);
@@ -1347,6 +1580,7 @@ static PhotoLib* BuildFromDcim(void* conn, int russian)
 	FreeNames(names, n);
 	RemoveEmpty(lib);
 	SortUserAlbums(lib);
+	DropNameSets(lib);
 	char line[80];
 	_snprintf_s(line, sizeof(line), _TRUNCATE, "photos dcim assets=%d albums=%d",
 		lib->nassets, lib->nalbums);
@@ -1572,99 +1806,258 @@ void ApplePhotosSetIo(const AppleAfcIo* io)
 	PhUnlock();
 }
 
+/* PhLock covers the in-memory library only. Pulling Photos.sqlite and
+   parsing it run outside that lock: another listing, resolve, or log
+   must not wait on the USB transfer. One build at a time; other callers
+   wait on g_buildEvent. AFC itself is not thread-safe, so stat/pull/list
+   take IoLock and never nest it with PhLock. The thread that starts the
+   build still blocks until the library is ready. */
 BOOL ApplePhotosEnsure(void* conn, const WCHAR* udid, int russian)
 {
 	if (!conn || !udid || !udid[0])
 		return FALSE;
 	russian=russian ? 1 : 0;
-	PhLock();
-	DbSig sig;
-	StatDb(conn, &sig);
-	PhotoLib* cur=FindLib(udid);
-	DWORD now=GetTickCount();
-	if (cur && SameSql(cur, &sig)) {
-		BOOL walMoved=cur->sqlMtime!=sig.mtime || cur->walSize!=sig.walSize || cur->walMtime!=sig.walMtime;
-		DWORD age=now-cur->builtTick;
-		if (!walMoved || age<180000) {
+	for (;;) {
+		PhLock();
+		if (g_buildBusy) {
+			BuildWait();
+			continue;
+		}
+		PhUnlock();
+
+		DbSig sig;
+		IoLock();
+		StatDb(conn, &sig);
+		IoUnlock();
+
+		PhLock();
+		if (g_buildBusy) {
+			PhUnlock();
+			continue;
+		}
+		PhotoLib* cur=FindLib(udid);
+		DWORD now=GetTickCount();
+		if (cur && SameSql(cur, &sig)) {
+			BOOL walMoved=cur->sqlMtime!=sig.mtime || cur->walSize!=sig.walSize || cur->walMtime!=sig.walMtime;
+			DWORD age=now-cur->builtTick;
+			if (!walMoved || age<180000) {
+				if (cur->russian!=russian)
+					ApplyLang(cur, russian);
+				BOOL ok=cur->nalbums>0;
+				PhUnlock();
+				return ok;
+			}
+		}
+		if (cur && SameFailed(cur, &sig)) {
 			if (cur->russian!=russian)
 				ApplyLang(cur, russian);
 			BOOL ok=cur->nalbums>0;
 			PhUnlock();
 			return ok;
 		}
-	}
-	if (cur && SameFailed(cur, &sig)) {
-		if (cur->russian!=russian)
-			ApplyLang(cur, russian);
-		BOOL ok=cur->nalbums>0;
+		BOOL skipSql=FALSE;
+		if (sig.present && cur && cur->sqlFailTick && (DWORD)(now-cur->sqlFailTick)<20000)
+			skipSql=TRUE;
+		BuildArm(udid);
 		PhUnlock();
-		return ok;
-	}
-	BOOL skipSql=FALSE;
-	if (sig.present && cur && cur->sqlFailTick && (DWORD)(now-cur->sqlFailTick)<20000)
-		skipSql=TRUE;
-	PhotoLib* neu=NULL;
-	if (sig.present && !skipSql && g_io.pull) {
-		WCHAR dbPath[MAX_PATH];
-		if (PullDb(conn, udid, dbPath, MAX_PATH)) {
-			neu=BuildLibFromDb(dbPath, russian);
+
+		PhotoLib* neu=NULL;
+		if (sig.present && !skipSql && g_io.pull) {
+			WCHAR dbPath[MAX_PATH];
+			IoLock();
+			BOOL pulled=PullDb(conn, udid, dbPath, MAX_PATH);
+			IoUnlock();
+			if (pulled) {
+				neu=BuildLibFromDb(dbPath, russian);
+				if (neu && neu->nalbums<=0) {
+					FreeLib(neu);
+					neu=NULL;
+				}
+				if (neu) {
+					neu->fromSqlite=1;
+					neu->sqlSize=sig.size;
+					neu->sqlMtime=sig.mtime;
+					neu->walSize=sig.walSize;
+					neu->walMtime=sig.walMtime;
+					now=GetTickCount();
+					neu->builtTick=now ? now : 1;
+				}
+			}
+			if (!neu)
+				Log("photos sqlite unusable");
+		}
+		if (!neu) {
+			IoLock();
+			ULONGLONG ds=DcimSig(conn);
+			IoUnlock();
+			PhLock();
+			cur=FindLib(udid);
+			if (cur && !cur->fromSqlite && cur->dcimSig && cur->dcimSig==ds && cur->nalbums>0) {
+				if (sig.present) {
+					now=GetTickCount();
+					cur->sqlFailTick=now ? now : 1;
+				}
+				if (cur->russian!=russian)
+					ApplyLang(cur, russian);
+				BuildSignal();
+				PhUnlock();
+				return TRUE;
+			}
+			PhUnlock();
+			IoLock();
+			neu=BuildFromDcim(conn, russian);
+			IoUnlock();
 			if (neu && neu->nalbums<=0) {
 				FreeLib(neu);
 				neu=NULL;
 			}
 			if (neu) {
-				neu->fromSqlite=1;
-				neu->sqlSize=sig.size;
-				neu->sqlMtime=sig.mtime;
-				neu->walSize=sig.walSize;
-				neu->walMtime=sig.walMtime;
-				neu->builtTick=now ? now : 1;
+				neu->fromSqlite=0;
+				neu->dcimSig=ds ? ds : 1;
+				if (sig.present) {
+					neu->sqlFailed=1;
+					neu->failSize=sig.size;
+					neu->failMtime=sig.mtime;
+					neu->failWalSize=sig.walSize;
+					neu->failWalMtime=sig.walMtime;
+					now=GetTickCount();
+					neu->sqlFailTick=now ? now : 1;
+				}
 			}
 		}
-		if (!neu)
-			Log("photos sqlite unusable");
-	}
-	if (!neu) {
-		ULONGLONG ds=DcimSig(conn);
-		cur=FindLib(udid);
-		if (cur && !cur->fromSqlite && cur->dcimSig && cur->dcimSig==ds && cur->nalbums>0) {
-			if (sig.present)
+		PhLock();
+		if (!neu) {
+			cur=FindLib(udid);
+			if (cur && sig.present) {
+				now=GetTickCount();
 				cur->sqlFailTick=now ? now : 1;
-			if (cur->russian!=russian)
-				ApplyLang(cur, russian);
-			PhUnlock();
-			return TRUE;
-		}
-		neu=BuildFromDcim(conn, russian);
-		if (neu && neu->nalbums<=0) {
-			FreeLib(neu);
-			neu=NULL;
-		}
-		if (neu) {
-			neu->fromSqlite=0;
-			neu->dcimSig=ds ? ds : 1;
-			if (sig.present) {
-				neu->sqlFailed=1;
-				neu->failSize=sig.size;
-				neu->failMtime=sig.mtime;
-				neu->failWalSize=sig.walSize;
-				neu->failWalMtime=sig.walMtime;
-				neu->sqlFailTick=now ? now : 1;
 			}
+			BuildSignal();
+			PhUnlock();
+			return FALSE;
 		}
-	}
-	if (!neu) {
-		cur=FindLib(udid);
-		if (cur && sig.present)
-			cur->sqlFailTick=now ? now : 1;
+		WcsCopy(neu->key, 80, udid);
+		neu->russian=russian;
+		ReplaceLib(neu);
+		BuildSignal();
 		PhUnlock();
+		return TRUE;
+	}
+}
+
+static unsigned PathHash(const char* s)
+{
+	unsigned h=2166136261u;
+	if (!s)
+		return h;
+	for (; *s; s++) {
+		h^=(unsigned char)*s;
+		h*=16777619u;
+	}
+	return h;
+}
+
+static void PathSetFree(PathSet* s)
+{
+	if (!s)
+		return;
+	free(s->key);
+	free(s->used);
+	memset(s, 0, sizeof(*s));
+}
+
+static BOOL PathSetRehash(PathSet* s, int cap)
+{
+	char** key=(char**)calloc((size_t)cap, sizeof(char*));
+	unsigned char* used=(unsigned char*)calloc((size_t)cap, 1);
+	if (!key || !used || cap<=0 || (cap&(cap-1))!=0) {
+		free(key);
+		free(used);
 		return FALSE;
 	}
-	WcsCopy(neu->key, 80, udid);
-	neu->russian=russian;
-	ReplaceLib(neu);
-	PhUnlock();
+	unsigned mask=(unsigned)cap-1u;
+	int placed=0;
+	for (int i=0; s->used && i<s->cap; i++) {
+		if (!s->used[i] || !s->key[i])
+			continue;
+		unsigned h=PathHash(s->key[i]);
+		int found=0;
+		for (int j=0;j<cap;j++) {
+			unsigned slot=(h+(unsigned)j)&mask;
+			if (!used[slot]) {
+				used[slot]=1;
+				key[slot]=s->key[i];
+				placed++;
+				found=1;
+				break;
+			}
+		}
+		if (!found) {
+			free(key);
+			free(used);
+			return FALSE;
+		}
+	}
+	if (placed!=s->n) {
+		free(key);
+		free(used);
+		return FALSE;
+	}
+	free(s->key);
+	free(s->used);
+	s->key=key;
+	s->used=used;
+	s->cap=cap;
 	return TRUE;
+}
+
+static void PathSetDisable(PathSet* s)
+{
+	if (!s)
+		return;
+	PathSetFree(s);
+	s->failed=1;
+}
+
+static BOOL PathSetHas(const PathSet* s, const char* path)
+{
+	if (!s || !s->cap || !path)
+		return FALSE;
+	unsigned mask=(unsigned)s->cap-1u;
+	unsigned h=PathHash(path);
+	for (int i=0;i<s->cap;i++) {
+		unsigned slot=(h+(unsigned)i)&mask;
+		if (!s->used[slot])
+			return FALSE;
+		if (s->key[slot] && strcmp(s->key[slot], path)==0)
+			return TRUE;
+	}
+	return FALSE;
+}
+
+static BOOL PathSetPut(PathSet* s, char* path)
+{
+	if (!s || !path || s->failed)
+		return FALSE;
+	if (s->cap<16 || s->n*2>=s->cap) {
+		int ncap=s->cap ? s->cap*2 : 16;
+		if (!PathSetRehash(s, ncap))
+			return FALSE;
+	}
+	unsigned mask=(unsigned)s->cap-1u;
+	unsigned h=PathHash(path);
+	for (int i=0;i<s->cap;i++) {
+		unsigned slot=(h+(unsigned)i)&mask;
+		if (!s->used[slot]) {
+			s->used[slot]=1;
+			s->key[slot]=path;
+			s->n++;
+			return TRUE;
+		}
+		if (s->key[slot] && strcmp(s->key[slot], path)==0)
+			return TRUE;
+	}
+	return FALSE;
 }
 
 struct TombKeep {
@@ -1672,6 +2065,7 @@ struct TombKeep {
 	char** paths;
 	int n, cap;
 	int loaded;
+	PathSet set;
 };
 
 static TombKeep g_keep[4];
@@ -1711,6 +2105,10 @@ static BOOL KeepHas(TombKeep* k, const char* path)
 {
 	if (!k || !path)
 		return FALSE;
+	if (!k->set.failed && k->set.cap)
+		return PathSetHas(&k->set, path);
+	if (!k->set.failed)
+		return FALSE;
 	for (int i=0;i<k->n;i++) {
 		if (k->paths[i] && strcmp(k->paths[i], path)==0)
 			return TRUE;
@@ -1731,8 +2129,11 @@ static void KeepAddMem(TombKeep* k, const char* path)
 		k->cap=ncap;
 	}
 	char* d=StrDup(path);
-	if (d)
-		k->paths[k->n++]=d;
+	if (!d)
+		return;
+	k->paths[k->n++]=d;
+	if (!k->set.failed && !PathSetPut(&k->set, d))
+		PathSetDisable(&k->set);
 }
 
 static void KeepLoad(TombKeep* k)
@@ -1785,9 +2186,46 @@ static void KeepFreeAll(void)
 		for (int j=0;j<g_keep[i].n;j++)
 			free(g_keep[i].paths[j]);
 		free(g_keep[i].paths);
+		PathSetFree(&g_keep[i].set);
 		memset(&g_keep[i], 0, sizeof(g_keep[i]));
 	}
 	g_nkeep=0;
+}
+
+static BOOL TombLibHas(PhotoLib* lib, const char* path)
+{
+	if (!lib || !path)
+		return FALSE;
+	if (!lib->tombset.failed && lib->tombset.cap)
+		return PathSetHas(&lib->tombset, path);
+	if (!lib->tombset.failed)
+		return FALSE;
+	for (int i=0;i<lib->ntomb;i++) {
+		if (lib->tombs[i] && strcmp(lib->tombs[i], path)==0)
+			return TRUE;
+	}
+	return FALSE;
+}
+
+static BOOL TombLibAdd(PhotoLib* lib, const char* path)
+{
+	if (!lib || !path || lib->ntomb>=4096)
+		return FALSE;
+	if (lib->ntomb>=lib->tombCap) {
+		int ncap=lib->tombCap ? lib->tombCap*2 : 8;
+		char** p=(char**)realloc(lib->tombs, (size_t)ncap*sizeof(char*));
+		if (!p)
+			return FALSE;
+		lib->tombs=p;
+		lib->tombCap=ncap;
+	}
+	char* d=StrDup(path);
+	if (!d)
+		return FALSE;
+	lib->tombs[lib->ntomb++]=d;
+	if (!lib->tombset.failed && !PathSetPut(&lib->tombset, d))
+		PathSetDisable(&lib->tombset);
+	return TRUE;
 }
 
 static BOOL Tomb(PhotoLib* lib, const char* path)
@@ -1795,10 +2233,8 @@ static BOOL Tomb(PhotoLib* lib, const char* path)
 	if (!path)
 		return FALSE;
 	if (lib) {
-		for (int i=0;i<lib->ntomb;i++) {
-			if (lib->tombs[i] && strcmp(lib->tombs[i], path)==0)
-				return TRUE;
-		}
+		if (TombLibHas(lib, path))
+			return TRUE;
 		TombKeep* k=KeepFind(lib->key, 0);
 		if (!k && lib->key[0]) {
 			k=KeepFind(lib->key, 1);
@@ -1985,10 +2421,16 @@ BOOL ApplePhotosResolve(const WCHAR* udid, const char* virtUtf8, char* afcPath, 
 		return FALSE;
 	afcPath[0]=0;
 	PhLock();
-	PhotoLib* lib=FindLib(udid);
-	BOOL ok=ResolveLib(lib, virtUtf8, afcPath, cch);
-	PhUnlock();
-	return ok;
+	for (;;) {
+		PhotoLib* lib=FindLib(udid);
+		if (lib || !g_buildBusy) {
+			BOOL ok=ResolveLib(lib, virtUtf8, afcPath, cch);
+			PhUnlock();
+			return ok;
+		}
+		BuildWait();
+		PhLock();
+	}
 }
 
 static BOOL BuildThumbAfc(const char* asset, const char* leaf, char* out, int cch)
@@ -2092,7 +2534,14 @@ BOOL ApplePhotosLoadThumb(void* conn, const WCHAR* udid, const char* virtUtf8, W
 		return FALSE;
 	localJpeg[0]=0;
 	PhLock();
-	PhotoLib* lib=FindLib(udid);
+	PhotoLib* lib=NULL;
+	for (;;) {
+		lib=FindLib(udid);
+		if (lib || !g_buildBusy)
+			break;
+		BuildWait();
+		PhLock();
+	}
 	char asset[512];
 	if (!ResolveLib(lib, virtUtf8, asset, (int)sizeof(asset))) {
 		PhUnlock();
@@ -2120,6 +2569,10 @@ BOOL ApplePhotosLoadThumb(void* conn, const WCHAR* udid, const char* virtUtf8, W
 			return localJpeg[0]!=0;
 		}
 	}
+	PhUnlock();
+	/* AFC is not thread-safe and must not run under PhLock: the library
+	   build holds IoLock across the sqlite download. */
+	IoLock();
 	int missing=0;
 	int got=-1;
 	for (int i=0;i<n;i++) {
@@ -2134,14 +2587,18 @@ BOOL ApplePhotosLoadThumb(void* conn, const WCHAR* udid, const char* virtUtf8, W
 			break;
 		}
 	}
+	IoUnlock();
 	if (got<0) {
-		if (n>0 && missing==n)
-			ThumbRememberMiss(lib, asset);
-		PhUnlock();
+		if (n>0 && missing==n) {
+			PhLock();
+			lib=FindLib(udid);
+			if (lib)
+				ThumbRememberMiss(lib, asset);
+			PhUnlock();
+		}
 		return FALSE;
 	}
 	WcsCopy(localJpeg, cch, local[got]);
-	PhUnlock();
 	static int logged=0;
 	if (!logged) {
 		logged=1;
@@ -2157,21 +2614,8 @@ void ApplePhotosTombstone(const WCHAR* udid, const char* afcPath)
 	PhLock();
 	KeepRemember(udid, afcPath);
 	PhotoLib* lib=FindLib(udid);
-	if (lib && !Tomb(lib, afcPath) && lib->ntomb<4096) {
-		if (lib->ntomb>=lib->tombCap) {
-			int ncap=lib->tombCap ? lib->tombCap*2 : 8;
-			char** p=(char**)realloc(lib->tombs, (size_t)ncap*sizeof(char*));
-			if (p) {
-				lib->tombs=p;
-				lib->tombCap=ncap;
-			}
-		}
-		if (lib->ntomb<lib->tombCap) {
-			char* d=StrDup(afcPath);
-			if (d)
-				lib->tombs[lib->ntomb++]=d;
-		}
-	}
+	if (lib && !Tomb(lib, afcPath))
+		TombLibAdd(lib, afcPath);
 	PhUnlock();
 }
 
@@ -2179,16 +2623,34 @@ void ApplePhotosShutdown(void)
 {
 	if (g_csState!=2)
 		return;
-	EnterCriticalSection(&g_cs);
+	for (;;) {
+		EnterCriticalSection(&g_cs);
+		if (!g_buildBusy)
+			break;
+		HANDLE ev=g_buildEvent;
+		LeaveCriticalSection(&g_cs);
+		if (ev)
+			WaitForSingleObject(ev, INFINITE);
+		else
+			Sleep(30);
+	}
 	for (int i=0;i<g_nlibs;i++) {
 		FreeLib(g_libs[i]);
 		g_libs[i]=NULL;
 	}
 	g_nlibs=0;
 	KeepFreeAll();
+	HANDLE ev=g_buildEvent;
+	g_buildEvent=NULL;
 	LeaveCriticalSection(&g_cs);
+	if (ev)
+		CloseHandle(ev);
 	DeleteCriticalSection(&g_cs);
 	g_csState=0;
+	if (g_ioCsState==2) {
+		DeleteCriticalSection(&g_ioCs);
+		g_ioCsState=0;
+	}
 }
 
 #ifdef PHOTOS_SELFTEST
@@ -2233,6 +2695,17 @@ static int AlbumHasName(PhotoAlbum* al, const WCHAR* name)
 	return 0;
 }
 
+static int AlbumHasExact(PhotoAlbum* al, const WCHAR* name)
+{
+	if (!al || !name)
+		return 0;
+	for (int i=0;i<al->n;i++) {
+		if (al->names[i] && wcscmp(al->names[i], name)==0)
+			return 1;
+	}
+	return 0;
+}
+
 int main(int argc, char** argv)
 {
 	if (argc>=2) {
@@ -2245,7 +2718,14 @@ int main(int argc, char** argv)
 		}
 		int months=0, users=0;
 		FILE* out=NULL;
-		_wfopen_s(&out, L"C:\\Users\\chuik\\AppData\\Local\\Temp\\photos_probe.txt", L"wb");
+		WCHAR probeOut[MAX_PATH];
+		probeOut[0]=0;
+		if (GetTempPathW(MAX_PATH, probeOut))
+			wcscat_s(probeOut, MAX_PATH, L"photos_probe.txt");
+		if (probeOut[0])
+			_wfopen_s(&out, probeOut, L"wb");
+		if (out)
+			wprintf(L"probe %s\n", probeOut);
 		printf("assets %d albums %d\n", probe->nassets, probe->nalbums);
 		for (int i=0;i<probe->nalbums;i++) {
 			if (probe->albums[i].smart==AL_MONTH)
@@ -2411,6 +2891,60 @@ int main(int argc, char** argv)
 	lib=BuildLibFromDb(dbw, 0);
 	Expect(lib && lib->albums[0].name && wcscmp(lib->albums[0].name, L"All Photos")==0, "en name");
 	FreeLib(lib);
+	{
+		PhotoLib* stress=(PhotoLib*)calloc(1, sizeof(PhotoLib));
+		PhotoAlbum* all=stress ? AddShell(stress, AL_ALL, L"All Photos") : NULL;
+		PhotoAlbum* user=stress ? AddShell(stress, AL_USER, L"Dup") : NULL;
+		Expect(all && user, "stress shells");
+		for (int i=0; all && i<4000; i++) {
+			WCHAR nm[32];
+			swprintf_s(nm, 32, L"A_%d.JPG", i);
+			if (!AddToAlbum(all, i, nm, NULL))
+				Expect(0, "stress add");
+		}
+		Expect(all && all->n==4000, "stress count");
+		Expect(all && AlbumHasExact(all, L"A_0.JPG") && AlbumHasExact(all, L"A_3999.JPG"), "stress names");
+		Expect(all && AddToAlbum(all, 4000, L"A_0.JPG", NULL), "stress same name");
+		Expect(all && AlbumHasExact(all, L"A_0 (2).JPG"), "stress suffix");
+		Expect(all && AddToAlbum(all, 4001, L"a_0.jpg", NULL), "stress case");
+		Expect(all && AlbumHasExact(all, L"a_0 (3).jpg"), "stress case suffix");
+		Expect(user && AddToAlbum(user, 1, L"Same.JPG", NULL), "user add");
+		Expect(user && AddToAlbum(user, 1, L"Other.JPG", NULL), "user dup id");
+		Expect(user && user->n==1, "user id once");
+		Expect(user && AddToAlbum(user, 2, L"Same.JPG", NULL), "user second");
+		Expect(user && AlbumHasExact(user, L"Same (2).JPG"), "user suffix");
+		FreeLib(stress);
+	}
+	{
+		PhotoLib* lib=(PhotoLib*)calloc(1, sizeof(PhotoLib));
+		Expect(lib!=NULL, "tomb lib");
+		if (lib)
+			WcsCopy(lib->key, 80, L"photos-selftest-tomb");
+		TombKeep* k=KeepFind(L"photos-selftest-tomb", 1);
+		if (k) {
+			WCHAR file[MAX_PATH];
+			KeepPath(k, file, MAX_PATH);
+			if (file[0])
+				DeleteFileW(file);
+			k->loaded=0;
+			KeepLoad(k);
+		}
+		for (int i=0; lib && i<200; i++) {
+			char path[64];
+			_snprintf_s(path, 64, _TRUNCATE, "DCIM/100APPLE/IMG_%04d.JPG", i);
+			if (i<100)
+				Expect(TombLibAdd(lib, path), "tomb lib add");
+			else if (k)
+				KeepAddMem(k, path);
+		}
+		Expect(lib && lib->tombset.n==100 && !lib->tombset.failed, "tomb lib hash");
+		Expect(k && k->set.n==100 && !k->set.failed, "tomb file hash");
+		Expect(lib && Tomb(lib, "DCIM/100APPLE/IMG_0001.JPG"), "tomb mem hit");
+		Expect(lib && Tomb(lib, "DCIM/100APPLE/IMG_0150.JPG"), "tomb file hit");
+		Expect(lib && !Tomb(lib, "DCIM/100APPLE/IMG_0999.JPG"), "tomb miss");
+		FreeLib(lib);
+		KeepFreeAll();
+	}
 	DeleteFileW(dbw);
 	if (g_fail) {
 		printf("%d failed\n", g_fail);

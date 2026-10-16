@@ -50,6 +50,23 @@ static LPCWSTR GetPluginIniPath(void)
 	return PluginIniNameW;
 }
 
+int PluginLogLevel(void)
+{
+	static int level=0;
+	static DWORD tick=0;
+	DWORD now=GetTickCount();
+	if (tick && (DWORD)(now-tick)<3000)
+		return level;
+	tick=now ? now : 1;
+	int v=GetPrivateProfileIntW(PLUGIN_INI_SECTION, L"LogLevel", 0, GetPluginIniPath());
+	if (v<0)
+		v=0;
+	if (v>2)
+		v=2;
+	level=v;
+	return level;
+}
+
 static int ReadLocalTimeIni(WCHAR* keyName)
 {
 	int value=GetPrivateProfileIntW(PLUGIN_INI_SECTION,keyName,-1,GetPluginIniPath());

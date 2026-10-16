@@ -15,6 +15,7 @@
 #include "connectionsettings.h"
 #include "wpdplug_int.h"
 #include "apple_md.h"
+#include "apple_photos.h"
 
 #define DefPluginTitle PLUGIN_DISPLAY_NAME
 
@@ -587,7 +588,9 @@ BOOL InitFunctionsIfNeeded(BOOL trueconnect)
 	AppleMdInit();
 	if (result && pDevMgr && StoredNumIds==0)
 		LoadAllDevices();
-	return (result && StoredNumIds>0) || AppleMdCount()>0 || result;
+	/* result alone means the WPD manager exists, including zero devices.
+	   Callers then resolve every path and log "Device not found!". */
+	return (result && StoredNumIds>0) || AppleMdCount()>0;
 }
 
 // From: http://blogs.msdn.com/b/wpdblog/archive/2007/03/17/how-to-receive-wpd-device-arrival-events.aspx
@@ -1493,17 +1496,27 @@ class CBulkCb : public IPortableDevicePropertiesBulkCallback
 {
 	LONG m_ref;
 	HANDLE m_done;
+	CRITICAL_SECTION m_cs;
 	pLastFindStuct m_lf;
 	HRESULT m_hr;
 public:
-	CBulkCb(pLastFindStuct lf) : m_ref(1), m_lf(lf), m_hr(S_OK)
+	CBulkCb(pLastFindStuct lf) : m_ref(1), m_done(NULL), m_lf(lf), m_hr(S_OK)
 	{
 		m_done=CreateEvent(NULL,TRUE,FALSE,NULL);
+		InitializeCriticalSection(&m_cs);
 	}
 	~CBulkCb()
 	{
 		if (m_done)
 			CloseHandle(m_done);
+		DeleteCriticalSection(&m_cs);
+	}
+	/* Caller still owns lf. Further OnProgress calls must not touch it. */
+	void Detach()
+	{
+		EnterCriticalSection(&m_cs);
+		m_lf=NULL;
+		LeaveCriticalSection(&m_cs);
 	}
 	HRESULT WaitDone(DWORD ms)
 	{
@@ -1535,31 +1548,35 @@ public:
 	STDMETHODIMP OnStart(REFGUID) { return S_OK; }
 	STDMETHODIMP OnProgress(REFGUID, IPortableDeviceValuesCollection* col)
 	{
-		if (!col || !m_lf)
+		if (!col)
 			return S_OK;
-		DWORD n=0;
-		col->GetCount(&n);
-		for (DWORD i=0;i<n;i++) {
-			IPortableDeviceValues* v=NULL;
-			if (FAILED(col->GetAt(i,&v)) || !v)
-				continue;
-			LPWSTR id=NULL;
-			v->GetStringValue(WPD_OBJECT_ID,&id);
-			BOOL kept=FALSE;
-			if (id) {
-				for (DWORD k=0;k<m_lf->szObjectIDsFetched;k++) {
-					if (m_lf->szObjectIDArray[k] && wcscmp(m_lf->szObjectIDArray[k],id)==0) {
-						SAFE_RELEASE(m_lf->szObjectValues[k]);
-						m_lf->szObjectValues[k]=v;
-						kept=TRUE;
-						break;
+		EnterCriticalSection(&m_cs);
+		if (m_lf) {
+			DWORD n=0;
+			col->GetCount(&n);
+			for (DWORD i=0;i<n;i++) {
+				IPortableDeviceValues* v=NULL;
+				if (FAILED(col->GetAt(i,&v)) || !v)
+					continue;
+				LPWSTR id=NULL;
+				v->GetStringValue(WPD_OBJECT_ID,&id);
+				BOOL kept=FALSE;
+				if (id) {
+					for (DWORD k=0;k<m_lf->szObjectIDsFetched;k++) {
+						if (m_lf->szObjectIDArray[k] && wcscmp(m_lf->szObjectIDArray[k],id)==0) {
+							SAFE_RELEASE(m_lf->szObjectValues[k]);
+							m_lf->szObjectValues[k]=v;
+							kept=TRUE;
+							break;
+						}
 					}
+					CoTaskMemFree(id);
 				}
-				CoTaskMemFree(id);
+				if (!kept)
+					SAFE_RELEASE(v);
 			}
-			if (!kept)
-				SAFE_RELEASE(v);
 		}
+		LeaveCriticalSection(&m_cs);
 		return S_OK;
 	}
 	STDMETHODIMP OnEnd(REFGUID, HRESULT hrStatus)
@@ -1613,15 +1630,24 @@ static void PrefetchBatchValues(pLastFindStuct lf)
 		if (held)
 			LeaveCriticalSection(&g_cs);
 		HRESULT waitHr=cb->WaitDone(800);
-		if (held)
-			EnterCriticalSection(&g_cs);
 		if (FAILED(waitHr)) {
+			/* Cancel returns before the worker stops. OnEnd is the
+			   barrier; some MTP stacks never send it, so the wait is
+			   bounded and Detach drops m_lf under the same lock as
+			   OnProgress. */
 			g_bulkDisabled=TRUE;
 			bulk->Cancel(ctx);
-			ReleaseBatchValues(lf);
+			cb->WaitDone(2000);
 		}
-	} else
+		cb->Detach();
+		if (held)
+			EnterCriticalSection(&g_cs);
+		if (FAILED(waitHr))
+			ReleaseBatchValues(lf);
+	} else {
 		g_bulkDisabled=TRUE;
+		cb->Detach();
+	}
 	SAFE_RELEASE(cb);
 	SAFE_RELEASE(ids);
 	SAFE_RELEASE(bulk);
@@ -1641,8 +1667,8 @@ void PopulateFindDataW(PWSTR szObject,pLastFindStuct lf,WIN32_FIND_DATAW *FindDa
 		memset(FindData,0,sizeof(WIN32_FIND_DATAW));
 		wcslcpy(FindData->cFileName,szObject,MAX_PATH-2);
 		FindData->dwFileAttributes=FILE_ATTRIBUTE_DIRECTORY;
-		FindData->ftLastWriteTime.dwHighDateTime=0xFFFFFFFF;
-		FindData->ftLastWriteTime.dwLowDateTime=0xFFFFFFFE;
+		FindData->ftLastWriteTime.dwHighDateTime=FT_NO_TIME_HIGH;
+		FindData->ftLastWriteTime.dwLowDateTime=FT_NO_TIME_LOW;
 		FindData->nFileSizeHigh=0;
 		FindData->nFileSizeLow=0;
 
@@ -1802,12 +1828,13 @@ HANDLE __stdcall FsFindFirstW(WCHAR* Path,WIN32_FIND_DATAW *FindData)
 
 		if (!InitFunctionsIfNeeded(TRUE)) {
 			UnlockPlugin();
-			SetLastError(ERROR_FILE_NOT_FOUND);
+			/* Plugin root with nothing attached is an empty folder. */
+			SetLastError(Path[1]==0 ? ERROR_NO_MORE_FILES : ERROR_FILE_NOT_FOUND);
 			return INVALID_HANDLE_VALUE;
 		}
 
 		if (Path[1]==0) {  // Enum just the devices
-			AppleMdResetSessions();
+			AppleMdResetSessionsCached();
 			DWORD total=StoredNumIds+(DWORD)AppleMdCount();
 			if (total==0) {
 				UnlockPlugin();
@@ -1816,8 +1843,8 @@ HANDLE __stdcall FsFindFirstW(WCHAR* Path,WIN32_FIND_DATAW *FindData)
 			}
 			memset(FindData,0,sizeof(*FindData));
 			FindData->dwFileAttributes=FILE_ATTRIBUTE_DIRECTORY;
-			FindData->ftLastWriteTime.dwHighDateTime=0xFFFFFFFF;
-			FindData->ftLastWriteTime.dwLowDateTime=0xFFFFFFFE;
+			FindData->ftLastWriteTime.dwHighDateTime=FT_NO_TIME_HIGH;
+			FindData->ftLastWriteTime.dwLowDateTime=FT_NO_TIME_LOW;
 			if (StoredNumIds>0)
 				wcslcpy(FindData->cFileName,StoredPnPFriendlyNames[0],MAX_PATH-2);
 			else
@@ -1924,8 +1951,6 @@ BOOL __stdcall FsFindNextW(HANDLE Hdl,WIN32_FIND_DATAW *FindData)
 	HRESULT hr;
 	pLastFindStuct lf;
 
-	if (Hdl==(HANDLE)1)
-		return false;
 	if (IsAbortRequested())
 		return false;
 
@@ -1941,8 +1966,8 @@ BOOL __stdcall FsFindNextW(HANDLE Hdl,WIN32_FIND_DATAW *FindData)
 			DWORD idx=lf->pPnpDeviceLastRead;
 			memset(FindData,0,sizeof(*FindData));
 			FindData->dwFileAttributes=FILE_ATTRIBUTE_DIRECTORY;
-			FindData->ftLastWriteTime.dwHighDateTime=0xFFFFFFFF;
-			FindData->ftLastWriteTime.dwLowDateTime=0xFFFFFFFE;
+			FindData->ftLastWriteTime.dwHighDateTime=FT_NO_TIME_HIGH;
+			FindData->ftLastWriteTime.dwLowDateTime=FT_NO_TIME_LOW;
 			if (idx<StoredNumIds)
 				wcslcpy(FindData->cFileName,StoredPnPFriendlyNames[idx],MAX_PATH-2);
 			else
@@ -1993,8 +2018,6 @@ BOOL __stdcall FsFindNextW(HANDLE Hdl,WIN32_FIND_DATAW *FindData)
 
 int __stdcall FsFindClose(HANDLE Hdl)
 {
-	if (Hdl==(HANDLE)1)
-		return 0;
 	pLastFindStuct lf;
 	lf=(pLastFindStuct)Hdl;
 	if (lf->listKind==2 && lf->appleFind) {
@@ -2308,12 +2331,12 @@ struct DeleteCancelWatch {
 	HANDLE done;
 };
 
-static void WpdTrace(const char* line)
+static void WpdTraceAt(int level, const char* line)
 {
 	char path[MAX_PATH];
 	DWORD n;
 	FILE* f=NULL;
-	if (!line)
+	if (!line || !line[0] || level>PluginLogLevel())
 		return;
 	n=GetTempPathA(MAX_PATH, path);
 	if (!n || n>=MAX_PATH-24)
@@ -2324,6 +2347,11 @@ static void WpdTrace(const char* line)
 	fputs(line, f);
 	fputc('\n', f);
 	fclose(f);
+}
+
+static void WpdTrace(const char* line)
+{
+	WpdTraceAt(0, line);
 }
 
 static DWORD WINAPI DeleteCancelThread(LPVOID arg)
@@ -2421,7 +2449,7 @@ static HRESULT WpdDeleteObject(IPortableDeviceContent* content, LPCWSTR objectId
 		hr=content->Delete(flags[attempt], col, &results);
 		sprintf_s(line, "wpd delete hr=0x%08lX rec=%lu id=%s",
 			(unsigned long)hr, (unsigned long)flags[attempt], id8);
-		WpdTrace(line);
+		WpdTraceAt(2, line);
 		if (WpdDeleteSucceeded(hr, results)) {
 			SAFE_RELEASE(results);
 			SAFE_RELEASE(col);
@@ -2433,6 +2461,7 @@ static HRESULT WpdDeleteObject(IPortableDeviceContent* content, LPCWSTR objectId
 			return S_OK;
 		}
 	}
+	WpdTrace(line);
 	SAFE_RELEASE(col);
 	return FAILED(hr) ? hr : E_FAIL;
 }
@@ -2832,7 +2861,7 @@ int __stdcall FsGetFileW(WCHAR* RemoteName,WCHAR* LocalName,int CopyFlags,Remote
 		}
 		if (AppleMdIsDeviceName(dev)) {
 			FILETIME* mt=NULL;
-			if (ri && !(ri->LastWriteTime.dwHighDateTime==0xFFFFFFFF))
+			if (ri && !(ri->LastWriteTime.dwHighDateTime==FT_NO_TIME_HIGH))
 				mt=&ri->LastWriteTime;
 			ULONGLONG sz=0;
 			if (ri)
@@ -2920,8 +2949,8 @@ int __stdcall FsGetFileW(WCHAR* RemoteName,WCHAR* LocalName,int CopyFlags,Remote
 						}
 					}
 					if (ri && result==FS_FILE_OK)  
-						if (!(ri->LastWriteTime.dwHighDateTime==0xFFFFFFFF && ri->LastWriteTime.dwLowDateTime==0xFFFFFFFF) &&
-							!(ri->LastWriteTime.dwHighDateTime==0xFFFFFFFF && ri->LastWriteTime.dwLowDateTime==0xFFFFFFFE) &&
+						if (!(ri->LastWriteTime.dwHighDateTime==FT_NO_TIME_HIGH && ri->LastWriteTime.dwLowDateTime==FT_NO_TIME_HIGH) &&
+							!(ri->LastWriteTime.dwHighDateTime==FT_NO_TIME_HIGH && ri->LastWriteTime.dwLowDateTime==FT_NO_TIME_LOW) &&
 							!(ri->LastWriteTime.dwHighDateTime>=27846442 && ri->LastWriteTime.dwHighDateTime<=27846660) && //1.1.1980, different time zones
 							!(ri->LastWriteTime.dwHighDateTime==0 && ri->LastWriteTime.dwLowDateTime==0))  // only if valid!
 								SetFileTime(f,NULL,NULL,&ri->LastWriteTime);
