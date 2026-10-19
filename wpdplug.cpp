@@ -674,6 +674,342 @@ DWORD CachedDirLens[CACHESIZE]={0};
 LPWSTR CachedObjectIds[CACHESIZE]={0};
 DWORD CachedLastUsedTimes[CACHESIZE]={0};
 
+/* Full TC path -> MTP object id. A folder listing fills it, and a cold
+   copy of one file reads the rest of that folder into it. Later files
+   open by id. The 32-slot cache above only stores parent folders, so
+   each file used to scan every sibling. Touched under LockPlugin. */
+/* Power of two. 48000/131072 is about 37%, so linear probing stays short. */
+#define OBJCACHE_CAP 131072
+#define OBJCACHE_MAX 48000
+#define WPD_READ_CHUNK (1024*1024)
+
+typedef struct {
+	LPWSTR path;
+	LPWSTR id;
+	DWORD hash;
+	DWORD pathLen;
+	BOOL tomb;
+} ObjCacheSlot;
+
+static ObjCacheSlot* g_objCache=NULL;
+static DWORD g_objCacheCount=0;
+static DWORD g_objTombs=0;
+static DWORD g_wpdReadChunk=WPD_READ_CHUNK;
+static int g_wpdReadFallbackLogged=0;
+static void WpdTrace(const char* line);
+
+static DWORD ObjCacheHash(const WCHAR* s, DWORD n)
+{
+	DWORD h=2166136261UL;
+	for (DWORD i=0;i<n;i++) {
+		h^=(DWORD)s[i];
+		h*=16777619UL;
+	}
+	return h ? h : 1;
+}
+
+static BOOL ObjCacheNormalize(LPCWSTR path, WCHAR* dest, DWORD cch, DWORD* lenOut)
+{
+	DWORD n;
+	if (!path || path[0]!='\\' || !dest || cch<3)
+		return FALSE;
+	wcslcpy(dest, path, cch-1);
+	n=(DWORD)wcslen(dest);
+	while (n>1 && dest[n-1]=='\\')
+		dest[--n]=0;
+	if (n<2)
+		return FALSE;
+	*lenOut=n;
+	return TRUE;
+}
+
+static void ObjCacheFree(void)
+{
+	DWORD i;
+	if (!g_objCache)
+		return;
+	for (i=0;i<OBJCACHE_CAP;i++) {
+		CoTaskMemFree(g_objCache[i].path);
+		CoTaskMemFree(g_objCache[i].id);
+	}
+	free(g_objCache);
+	g_objCache=NULL;
+	g_objCacheCount=0;
+	g_objTombs=0;
+}
+
+static BOOL ObjCacheEnsure(void)
+{
+	if (g_objCache)
+		return TRUE;
+	g_objCache=(ObjCacheSlot*)malloc(sizeof(ObjCacheSlot)*OBJCACHE_CAP);
+	if (!g_objCache)
+		return FALSE;
+	memset(g_objCache, 0, sizeof(ObjCacheSlot)*OBJCACHE_CAP);
+	return TRUE;
+}
+
+static ObjCacheSlot* ObjCacheProbe(const WCHAR* key, DWORD len, DWORD hash, BOOL* found)
+{
+	DWORD mask=OBJCACHE_CAP-1;
+	DWORD i=hash & mask;
+	ObjCacheSlot* firstTomb=NULL;
+	*found=FALSE;
+	for (DWORD n=0;n<OBJCACHE_CAP;n++) {
+		ObjCacheSlot* s=&g_objCache[i];
+		if (!s->path && !s->tomb)
+			return firstTomb ? firstTomb : s;
+		if (!s->path && s->tomb) {
+			if (!firstTomb)
+				firstTomb=s;
+		} else if (s->hash==hash && s->pathLen==len && wcscmp(s->path, key)==0) {
+			*found=TRUE;
+			return s;
+		}
+		i=(i+1)&mask;
+	}
+	return firstTomb;
+}
+
+static void ObjCacheRebuild(void);
+
+static void ObjCachePut(LPCWSTR path, LPCWSTR objectId)
+{
+	WCHAR key[wdirtypemax];
+	DWORD len=0, hash;
+	BOOL found=FALSE;
+	ObjCacheSlot* s;
+	LPWSTR pcopy, icopy;
+	if (!path || !objectId || !objectId[0])
+		return;
+	if (!ObjCacheNormalize(path, key, wdirtypemax, &len))
+		return;
+	if (!ObjCacheEnsure())
+		return;
+	if (g_objTombs>4096)
+		ObjCacheRebuild();
+	if (!g_objCache)
+		return;
+	hash=ObjCacheHash(key, len);
+	s=ObjCacheProbe(key, len, hash, &found);
+	if (!s)
+		return;
+	if (found) {
+		/* A later sighting of the same path replaces the id, so a
+		   recreated object is not stuck on the previous one. */
+		if (s->id && wcscmp(s->id, objectId)==0)
+			return;
+		icopy=wstrnew((LPWSTR)objectId);
+		if (!icopy)
+			return;
+		CoTaskMemFree(s->id);
+		s->id=icopy;
+		return;
+	}
+	if (g_objCacheCount>=OBJCACHE_MAX)
+		return;
+	pcopy=wstrnew((LPWSTR)key);
+	icopy=wstrnew((LPWSTR)objectId);
+	if (!pcopy || !icopy) {
+		CoTaskMemFree(pcopy);
+		CoTaskMemFree(icopy);
+		return;
+	}
+	if (s->tomb && g_objTombs)
+		g_objTombs--;
+	s->path=pcopy;
+	s->id=icopy;
+	s->hash=hash;
+	s->pathLen=len;
+	s->tomb=FALSE;
+	g_objCacheCount++;
+}
+
+static BOOL ObjCacheFind(LPCWSTR path, LPCWSTR* idOut)
+{
+	WCHAR key[wdirtypemax];
+	DWORD len=0;
+	BOOL found=FALSE;
+	ObjCacheSlot* s;
+	if (!idOut)
+		return FALSE;
+	*idOut=NULL;
+	if (!g_objCache)
+		return FALSE;
+	if (!ObjCacheNormalize(path, key, wdirtypemax, &len))
+		return FALSE;
+	s=ObjCacheProbe(key, len, ObjCacheHash(key, len), &found);
+	if (!found || !s || !s->id)
+		return FALSE;
+	*idOut=s->id;
+	return TRUE;
+}
+
+static void ObjCacheRemoveExact(LPCWSTR path)
+{
+	WCHAR key[wdirtypemax];
+	DWORD len=0;
+	BOOL found=FALSE;
+	ObjCacheSlot* s;
+	if (!g_objCache)
+		return;
+	if (!ObjCacheNormalize(path, key, wdirtypemax, &len))
+		return;
+	s=ObjCacheProbe(key, len, ObjCacheHash(key, len), &found);
+	if (!found || !s)
+		return;
+	CoTaskMemFree(s->path);
+	CoTaskMemFree(s->id);
+	s->path=NULL;
+	s->id=NULL;
+	s->hash=0;
+	s->pathLen=0;
+	s->tomb=TRUE;
+	if (g_objCacheCount)
+		g_objCacheCount--;
+	g_objTombs++;
+}
+
+static void ObjCacheForget(LPCWSTR path)
+{
+	/* Always LockPlugin. t_pluginLockHeld counts Lock/Unlock pairs, and
+	   ProgressCheck / PrefetchBatchValues drop g_cs without changing it,
+	   so the counter is not ownership on reentry. The section is recursive. */
+	LockPlugin();
+	ObjCacheRemoveExact(path);
+	UnlockPlugin();
+}
+
+static void ObjCacheRemovePrefix(LPCWSTR prefix)
+{
+	WCHAR key[wdirtypemax];
+	WCHAR child[wdirtypemax];
+	DWORD exactLen, childLen, i;
+	if (!g_objCache || !prefix || !prefix[0])
+		return;
+	if (prefix[0]=='\\')
+		wcslcpy(key, prefix, wdirtypemax-1);
+	else {
+		key[0]='\\';
+		key[1]=0;
+		wcslcat(key, prefix, wdirtypemax-1);
+	}
+	exactLen=(DWORD)wcslen(key);
+	while (exactLen>1 && key[exactLen-1]=='\\')
+		key[--exactLen]=0;
+	if (exactLen+2>=wdirtypemax)
+		return;
+	wcslcpy(child, key, wdirtypemax-1);
+	child[exactLen]='\\';
+	child[exactLen+1]=0;
+	childLen=exactLen+1;
+	for (i=0;i<OBJCACHE_CAP;i++) {
+		ObjCacheSlot* s=&g_objCache[i];
+		if (!s->path)
+			continue;
+		if ((s->pathLen==exactLen && wcscmp(s->path, key)==0) ||
+			(s->pathLen>=childLen && wcsncmp(s->path, child, childLen)==0)) {
+			CoTaskMemFree(s->path);
+			CoTaskMemFree(s->id);
+			s->path=NULL;
+			s->id=NULL;
+			s->hash=0;
+			s->pathLen=0;
+			s->tomb=TRUE;
+			if (g_objCacheCount)
+				g_objCacheCount--;
+			g_objTombs++;
+		}
+	}
+	if (g_objTombs>4096)
+		ObjCacheRebuild();
+}
+
+static void ObjCacheRebuild(void)
+{
+	ObjCacheSlot* old;
+	DWORD i;
+	if (!g_objCache)
+		return;
+	old=g_objCache;
+	g_objCache=NULL;
+	g_objCacheCount=0;
+	g_objTombs=0;
+	if (!ObjCacheEnsure()) {
+		for (i=0;i<OBJCACHE_CAP;i++) {
+			CoTaskMemFree(old[i].path);
+			CoTaskMemFree(old[i].id);
+		}
+		free(old);
+		return;
+	}
+	for (i=0;i<OBJCACHE_CAP;i++) {
+		if (old[i].path && old[i].id)
+			ObjCachePut(old[i].path, old[i].id);
+		CoTaskMemFree(old[i].path);
+		CoTaskMemFree(old[i].id);
+	}
+	free(old);
+}
+
+static int g_objCacheLongLogged=0;
+
+static void ObjCachePathTooLong(void)
+{
+	if (g_objCacheLongLogged)
+		return;
+	g_objCacheLongLogged=1;
+	WpdTrace("objcache path too long");
+}
+
+static void RememberWalkChild(LPCWSTR device, LPCWSTR relStart, LPCWSTR relCur, LPCWSTR childName, LPCWSTR objectId)
+{
+	WCHAR full[wdirtypemax];
+	size_t cur, n;
+	if (!device || !device[0] || !childName || !childName[0] || !objectId || !objectId[0])
+		return;
+	if (wcslen(device)+wcslen(childName)+2>=wdirtypemax) {
+		ObjCachePathTooLong();
+		return;
+	}
+	full[0]='\\';
+	full[1]=0;
+	wcslcat(full, device, wdirtypemax-1);
+	wcslcatbackslash(full, wdirtypemax-1);
+	if (relStart && relCur && relCur>relStart) {
+		n=(size_t)(relCur-relStart);
+		cur=wcslen(full);
+		if (cur+n+wcslen(childName)+2>=wdirtypemax) {
+			ObjCachePathTooLong();
+			return;
+		}
+		wmemcpy(full+cur, relStart, n);
+		full[cur+n]=0;
+		if (n>0 && full[cur+n-1]!='\\')
+			wcslcatbackslash(full, wdirtypemax-1);
+	}
+	wcslcat(full, childName, wdirtypemax-1);
+	ObjCachePut(full, objectId);
+}
+
+static void RememberListedObject(pLastFindStuct lf, WIN32_FIND_DATAW* fd, LPCWSTR objectId)
+{
+	WCHAR full[wdirtypemax];
+	if (!lf || !fd || !objectId || !objectId[0] || !fd->cFileName[0])
+		return;
+	wcslcpy(full, lf->Path, wdirtypemax-1);
+	if (!full[0])
+		return;
+	if (full[wcslen(full)-1]!='\\')
+		wcslcatbackslash(full, wdirtypemax-1);
+	if (wcslen(full)+wcslen(fd->cFileName)>=wdirtypemax-1) {
+		ObjCachePathTooLong();
+		return;
+	}
+	wcslcat(full, fd->cFileName, wdirtypemax-1);
+	ObjCachePut(full, objectId);
+}
+
 void ClearCache() {
 	for (int i=0;i<CACHESIZE;i++) {
 		if (CachedDirs[i]!=NULL)
@@ -685,6 +1021,11 @@ void ClearCache() {
 	memset(&CachedDirLens,0,sizeof(CachedDirLens));
 	memset(&CachedObjectIds,0,sizeof(CachedObjectIds));
 	memset(&CachedLastUsedTimes,0,sizeof(CachedLastUsedTimes));
+	ObjCacheFree();
+	/* A bad phone shrinks the read size for the process. The next device
+	   should try 1 MB again. */
+	g_wpdReadChunk=WPD_READ_CHUNK;
+	g_wpdReadFallbackLogged=0;
 }
 
 void RemoveNameFromCache(LPWSTR pdir) {
@@ -705,7 +1046,7 @@ void RemoveNameFromCache(LPWSTR pdir) {
 			CachedLastUsedTimes[i]=0;
 		}
 	}
-
+	ObjCacheRemovePrefix(fulldir);
 }
 
 void RemoveFullPathFromCache(LPWSTR pdir) {
@@ -858,6 +1199,34 @@ HRESULT GetFolderIDFromPathName(LPWSTR pPath,IEnumPortableDeviceObjectIDs** pEnu
 			return hr;
 		} 
 	}
+	if (SUCCEEDED(hr) && pContent) {
+		LPCWSTR cachedId=NULL;
+		if (ObjCacheFind(pPath, &cachedId) && cachedId) {
+			BOOL use=TRUE;
+			IEnumPortableDeviceObjectIDs* en=NULL;
+			if (pEnumObjectIDsRetVal) {
+				HRESULT hrEn=pContent->EnumObjects(0, (LPWSTR)cachedId, NULL, &en);
+				if (FAILED(hrEn)) {
+					ObjCacheRemoveExact(pPath);
+					SAFE_RELEASE(en);
+					use=FALSE;
+				}
+			}
+			if (use) {
+				if (pEnumObjectIDsRetVal)
+					*pEnumObjectIDsRetVal=en;
+				if (pPropertiesRetVal)
+					pContent->Properties(pPropertiesRetVal);
+				if (pDeviceContent)
+					*pDeviceContent=pContent;
+				else
+					SAFE_RELEASE(pContent);
+				if (pStorageIDRetVal)
+					*pStorageIDRetVal=wstrnew((LPWSTR)cachedId);
+				return S_OK;
+			}
+		}
+	}
 	PWSTR returnedObjectId=NULL;
 	pdirsubstart=pdirstart;
 	if (!FindNameInCache(wcSearch,pdirstart,&returnedObjectId,&pdirsubstart))
@@ -918,6 +1287,12 @@ HRESULT GetFolderIDFromPathName(LPWSTR pPath,IEnumPortableDeviceObjectIDs** pEnu
 
 	DWORD cFetched=0;
 	DWORD time=GetTickCount();
+	LPWSTR foundId=NULL;
+	BOOL stopDrain=FALSE;
+	/* FsGetFile asks only for the object id. The first miss reads every
+	   sibling into the cache, so the rest of a large copy does not scan
+	   the folder again. Once the cache is full, stop at the match. */
+	BOOL idOnly=(pEnumObjectIDsRetVal==NULL && pPropertiesRetVal==NULL && pStorageIDRetVal!=NULL);
 	while (SUCCEEDED(hr)) {
 		PWSTR szObjectIDArray[NUM_OBJECTS_TO_REQUEST];
 		hr = pEnumObjectIDs->Next(NUM_OBJECTS_TO_REQUEST,   // Number of objects to request on each NEXT call
@@ -936,7 +1311,14 @@ HRESULT GetFolderIDFromPathName(LPWSTR pPath,IEnumPortableDeviceObjectIDs** pEnu
 				PickObjectDisplayName(pObjectProperties, showname, MAX_PATH);
 				SAFE_RELEASE(pObjectProperties);
 
+				RememberWalkChild(wcSearch, pdirstart, pname, showname, szObjectIDArray[i]);
 				if (wcscmp(showname,pname)==0) {  //found!!
+					if (idOnly && !pnext) {
+						if (!foundId)
+							foundId=wstrnew(szObjectIDArray[i]);
+						if (foundId && g_objCacheCount>=OBJCACHE_MAX)
+							stopDrain=TRUE;
+					} else {
 					AddNameToCache(wcSearch,pdirstart,szObjectIDArray[i],time);
 					SAFE_RELEASE(pEnumObjectIDs);
 
@@ -982,12 +1364,30 @@ HRESULT GetFolderIDFromPathName(LPWSTR pPath,IEnumPortableDeviceObjectIDs** pEnu
 						SAFE_RELEASE(pPropertiesToRead);
 						return S_OK;
 					}
+					}
 				}
 			}
+			if (stopDrain)
+				break;
 			i++;
 		}
 		for (i=0;i<cFetched;i++)
 			CoTaskMemFree(szObjectIDArray[i]);
+		if (stopDrain)
+			break;
+	}
+	if (foundId) {
+		SAFE_RELEASE(pPropertiesToRead);
+		SAFE_RELEASE(pProperties);
+		SAFE_RELEASE(pEnumObjectIDs);
+		if (pDeviceContent)
+			*pDeviceContent=pContent;
+		else
+			SAFE_RELEASE(pContent);
+		*pStorageIDRetVal=foundId;
+		if (LastParentName)
+			CoTaskMemFree(LastParentName);
+		return S_OK;
 	}
 	SAFE_RELEASE(pPropertiesToRead);
 	SAFE_RELEASE(pProperties);
@@ -1936,6 +2336,7 @@ HANDLE __stdcall FsFindFirstW(WCHAR* Path,WIN32_FIND_DATAW *FindData)
 			lf->LocalTime=UseLocalTime(Path);
 			PrefetchBatchValues(lf);
 			PopulateFindDataW(lf->szObjectIDArray[0],lf,FindData,lf->LocalTime);
+			RememberListedObject(lf, FindData, lf->szObjectIDArray[0]);
 			lf->listedCount=1;
 			UnlockPlugin();
 			ProgressProcT(PluginNumber,lf->Path,FindData->cFileName,0);
@@ -2003,6 +2404,7 @@ BOOL __stdcall FsFindNextW(HANDLE Hdl,WIN32_FIND_DATAW *FindData)
 			PrefetchBatchValues(lf);
 		}
 		PopulateFindDataW(lf->szObjectIDArray[lf->szObjectIDLastRead],lf,FindData,lf->LocalTime);
+		RememberListedObject(lf, FindData, lf->szObjectIDArray[lf->szObjectIDLastRead]);
 		lf->listedCount++;
 		DWORD n=lf->listedCount;
 		UnlockPlugin();
@@ -2886,17 +3288,32 @@ int __stdcall FsGetFileW(WCHAR* RemoteName,WCHAR* LocalName,int CopyFlags,Remote
 	IStream *pStream=NULL;
 	if (SUCCEEDED(hr) && pDeviceContent) {
 		hr=pDeviceContent->Transfer(&pResources);
-		DWORD OptimalBufferSize=32768;
+		DWORD driverBuf=32768;
 		if (SUCCEEDED(hr) && pResources)
 			hr= pResources->GetStream(pItemStorageID,
 				WPD_RESOURCE_DEFAULT,
 				STGM_READ,
-				&OptimalBufferSize,
+				&driverBuf,
 				&pStream);
+		if (!(SUCCEEDED(hr) && pStream))
+			ObjCacheRemoveExact(WRemoteName);
 		if (SUCCEEDED(hr) && pStream) {
-			if (OptimalBufferSize<1024)
-				OptimalBufferSize=1024;
-			char* buf=(char*)malloc(OptimalBufferSize);
+			if (driverBuf<1024)
+				driverBuf=1024;
+			/* Ask for 1 MB. A stack that rejects that falls back once,
+			   and later files use the size that worked. */
+			DWORD readSize=driverBuf;
+			if (g_wpdReadChunk>readSize)
+				readSize=g_wpdReadChunk;
+			if (readSize>4*1024*1024)
+				readSize=4*1024*1024;
+			BOOL tryLarge=(readSize>driverBuf);
+			char* buf=(char*)malloc(readSize);
+			if (!buf && tryLarge) {
+				readSize=driverBuf;
+				tryLarge=FALSE;
+				buf=(char*)malloc(readSize);
+			}
 			if (!buf) {
 				result=FS_FILE_READERROR;
 			} else {
@@ -2913,7 +3330,49 @@ int __stdcall FsGetFileW(WCHAR* RemoteName,WCHAR* LocalName,int CopyFlags,Remote
 							result=FS_FILE_USERABORT;
 							break;
 						}
-						hr=pStream->Read(buf,OptimalBufferSize,&BytesRead);
+						BytesRead=0;
+						hr=pStream->Read(buf,readSize,&BytesRead);
+						if (tryLarge && totalcopied==0 &&
+							(FAILED(hr) || (SUCCEEDED(hr) && BytesRead==0 && totalsize>0))) {
+							DWORD fallbackSize=driverBuf;
+							LockPlugin();
+							SAFE_RELEASE(pStream);
+							hr=pResources->GetStream(pItemStorageID,
+								WPD_RESOURCE_DEFAULT,
+								STGM_READ,
+								&fallbackSize,
+								&pStream);
+							UnlockPlugin();
+							if (fallbackSize<1024)
+								fallbackSize=1024;
+							if (fallbackSize>4*1024*1024)
+								fallbackSize=4*1024*1024;
+							char* smallBuf=(char*)malloc(fallbackSize);
+							if (FAILED(hr) || !pStream || !smallBuf) {
+								free(smallBuf);
+								ObjCacheForget(WRemoteName);
+								result=FS_FILE_READERROR;
+								break;
+							}
+							free(buf);
+							buf=smallBuf;
+							readSize=fallbackSize;
+							tryLarge=FALSE;
+							BytesRead=0;
+							hr=pStream->Read(buf,readSize,&BytesRead);
+							if (FAILED(hr)) {
+								ObjCacheForget(WRemoteName);
+								result=FS_FILE_READERROR;
+								break;
+							}
+							if (BytesRead>0) {
+								if (!g_wpdReadFallbackLogged) {
+									g_wpdReadFallbackLogged=1;
+									WpdTrace("wpd read fallback");
+								}
+								g_wpdReadChunk=readSize;
+							}
+						}
 						if (SUCCEEDED(hr) && BytesRead>0) {
 							DWORD left=BytesRead;
 							char* pbuf=buf;
@@ -2939,7 +3398,11 @@ int __stdcall FsGetFileW(WCHAR* RemoteName,WCHAR* LocalName,int CopyFlags,Remote
 								}
 							}
 						} else {
-							if (BytesRead==0) {
+							if (FAILED(hr)) {
+								result=FS_FILE_READERROR;
+								if (totalcopied==0)
+									ObjCacheForget(WRemoteName);
+							} else if (BytesRead==0) {
 								if (totalsize!=0 && totalcopied!=totalsize)
 									result=FS_FILE_READERROR;
 								else
@@ -3446,7 +3909,7 @@ int __stdcall FsPutFileW(WCHAR* LocalName,WCHAR* RemoteName,int CopyFlags)
 										if (!SUCCEEDED(hr2))
 											err=16;
 										HRESULT hr3=pStream->Commit(STGC_DEFAULT);
-										if (!SUCCEEDED(hr2) && err==0) {
+										if (!SUCCEEDED(hr3) && err==0) {
 											hr2=hr3;
 											err=17;
 										}
@@ -3613,6 +4076,7 @@ void __stdcall FsGetDefRootName(char* DefRootName,int maxlen)
 
 void __stdcall FsContentPluginUnloading(void)
 {
+	ObjCacheFree();
 	ShutdownGdiPlus();
 	AppleMdShutdown();
 	DisConnectIfNeeded();

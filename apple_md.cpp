@@ -759,8 +759,18 @@ static BOOL EnsureSession(ApplePhone* p)
 		CloseAppleSock(&sock);
 		return FALSE;
 	}
+	AppleLock();
+	if (p->afc && p->afc!=conn) {
+		AppleUnlock();
+		if (pAFCConnectionClose) {
+			__try { pAFCConnectionClose(conn); } __except(EXCEPTION_EXECUTE_HANDLER) {}
+		}
+		CloseAppleSock(&sock);
+		return TRUE;
+	}
 	p->sock=sock;
 	p->afc=conn;
+	AppleUnlock();
 	return TRUE;
 }
 
@@ -978,6 +988,8 @@ static BOOL NotePop(AppleNote* out)
 	return TRUE;
 }
 
+static void InfoCacheClear(LPCWSTR name);
+
 static void ApplyAppleNotify(am_device dev, unsigned int msg)
 {
 	/* info->dev lifetime is Apple's. Caller holds AppleLock. */
@@ -1048,6 +1060,7 @@ static void ApplyAppleNotify(am_device dev, unsigned int msg)
 		} else if (msg==ADNCI_MSG_DISCONNECTED) {
 			for (int i=0;i<g_nphones;i++) {
 				if (g_phones[i].dev==dev) {
+					InfoCacheClear(g_phones[i].name);
 					/* A copy or a Logs open holds an ApplePhone* into this array.
 					   Compacting under either one moves that pointer. */
 					BOOL busy=AnyXferBusy() || AnyPanicBusy();
@@ -1640,6 +1653,18 @@ static void InfoCacheStore(LPCWSTR name, const PluginDeviceInfo* info)
 	wcslcpy(c->name, name, 128);
 	c->tick=now;
 	c->info=*info;
+}
+
+static void InfoCacheClear(LPCWSTR name)
+{
+	if (!name || !name[0])
+		return;
+	for (int i=0;i<APPLE_MAX;i++) {
+		if (_wcsicmp(g_infoCache[i].name, name)==0) {
+			memset(&g_infoCache[i], 0, sizeof(g_infoCache[i]));
+			break;
+		}
+	}
 }
 
 BOOL AppleMdFillInfo(LPCWSTR deviceName, PluginDeviceInfo* info)
@@ -3307,7 +3332,8 @@ static void PanicStore(PanicOpenJob* j, afc_connection conn, void* svc, WIN32_FI
 		p->nPanicEnt=nent;
 		p->panicFailTick=0;
 	} else {
-		p->panicFailTick=GetTickCount();
+		DWORD now=GetTickCount();
+		p->panicFailTick=now ? now : 1;
 		if (!(conn && nent>0))
 			free(ents);
 	}
@@ -4416,17 +4442,27 @@ static int AppleMdPutFileWork(LPCWSTR deviceName, LPCWSTR relPath, LPCWSTR local
 		return FS_FILE_NOTSUPPORTED;
 	PutLock(locked);
 	ApplePhone* p=FindPhoneByName(deviceName);
+	if (!p) {
+		PutUnlock(locked);
+		return FS_FILE_WRITEERROR;
+	}
+	p->appXfer++;
+	if (xferPhone)
+		*xferPhone=p;
 	PutUnlock(locked);
 	/* CreateHouseArrest / StartService must run without AppleLock:
 	   the device run loop takes the same lock. */
 	afc_connection conn=NULL;
-	if (!p || !ResolveAfc(p, relPath, &conn, afcPath, 1024, TRUE) || !conn) {
+	if (!ResolveAfc(p, relPath, &conn, afcPath, 1024, TRUE) || !conn) {
 		MdLog("put no session");
+		/* xferPhone stays set. AppleMdPutFile drops appXfer after the
+		   call returns, on this path as well as after an exception.
+		   Do not decrement here: that would run twice. */
 		return FS_FILE_WRITEERROR;
 	}
 	PutLock(locked);
 	p=FindPhoneByName(deviceName);
-	if (!p) {
+	if (!p || p->xferGone) {
 		PutUnlock(locked);
 		return FS_FILE_WRITEERROR;
 	}
@@ -4459,9 +4495,6 @@ static int AppleMdPutFileWork(LPCWSTR deviceName, LPCWSTR relPath, LPCWSTR local
 	}
 	if (usedPath[0])
 		strcpy_s(afcPath, usedPath);
-	p->appXfer++;
-	if (xferPhone)
-		*xferPhone=p;
 
 	WCHAR remoteDisp[wdirtypemax];
 	wcslcpy(remoteDisp, L"\\", wdirtypemax-1);
@@ -4539,9 +4572,15 @@ int AppleMdPutFile(LPCWSTR deviceName, LPCWSTR relPath, LPCWSTR localPath, BOOL 
 	xferPhone=NULL;
 	BOOL wasLocked=(BOOL)locked;
 	locked=FALSE;
-	if (p && p->appXfer>0)
-		p->appXfer--;
-	if (wasLocked)
+	if (p) {
+		if (!wasLocked)
+			AppleLock();
+		if (p->appXfer>0)
+			p->appXfer--;
+		SweepGonePhones();
 		AppleUnlock();
+	} else if (wasLocked) {
+		AppleUnlock();
+	}
 	return r;
 }

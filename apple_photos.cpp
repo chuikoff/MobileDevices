@@ -248,7 +248,7 @@ static void BuildWait(void)
 	HANDLE ev=g_buildEvent;
 	PhUnlock();
 	if (ev)
-		WaitForSingleObject(ev, INFINITE);
+		WaitForSingleObject(ev, 30000);
 	else
 		Sleep(30);
 }
@@ -1861,69 +1861,90 @@ BOOL ApplePhotosEnsure(void* conn, const WCHAR* udid, int russian)
 		BuildArm(udid);
 		PhUnlock();
 
-		PhotoLib* neu=NULL;
-		if (sig.present && !skipSql && g_io.pull) {
-			WCHAR dbPath[MAX_PATH];
-			IoLock();
-			BOOL pulled=PullDb(conn, udid, dbPath, MAX_PATH);
-			IoUnlock();
-			if (pulled) {
-				neu=BuildLibFromDb(dbPath, russian);
+		PhotoLib* volatile neu=NULL;
+		/* g_ioCsState==2 means the section exists, not that this thread
+		   owns it. Leave without Enter hangs the next IoLock. */
+		volatile int ioLocked=0;
+		__try {
+			if (sig.present && !skipSql && g_io.pull) {
+				WCHAR dbPath[MAX_PATH];
+				IoLock();
+				ioLocked=1;
+				BOOL pulled=PullDb(conn, udid, dbPath, MAX_PATH);
+				IoUnlock();
+				ioLocked=0;
+				if (pulled) {
+					neu=BuildLibFromDb(dbPath, russian);
+					if (neu && neu->nalbums<=0) {
+						FreeLib(neu);
+						neu=NULL;
+					}
+					if (neu) {
+						neu->fromSqlite=1;
+						neu->sqlSize=sig.size;
+						neu->sqlMtime=sig.mtime;
+						neu->walSize=sig.walSize;
+						neu->walMtime=sig.walMtime;
+						now=GetTickCount();
+						neu->builtTick=now ? now : 1;
+					}
+				}
+				if (!neu)
+					Log("photos sqlite unusable");
+			}
+			if (!neu) {
+				IoLock();
+				ioLocked=1;
+				ULONGLONG ds=DcimSig(conn);
+				IoUnlock();
+				ioLocked=0;
+				PhLock();
+				cur=FindLib(udid);
+				if (cur && !cur->fromSqlite && cur->dcimSig && cur->dcimSig==ds && cur->nalbums>0) {
+					if (sig.present) {
+						now=GetTickCount();
+						cur->sqlFailTick=now ? now : 1;
+					}
+					if (cur->russian!=russian)
+						ApplyLang(cur, russian);
+					BuildSignal();
+					PhUnlock();
+					return TRUE;
+				}
+				PhUnlock();
+				IoLock();
+				ioLocked=1;
+				neu=BuildFromDcim(conn, russian);
+				IoUnlock();
+				ioLocked=0;
 				if (neu && neu->nalbums<=0) {
 					FreeLib(neu);
 					neu=NULL;
 				}
 				if (neu) {
-					neu->fromSqlite=1;
-					neu->sqlSize=sig.size;
-					neu->sqlMtime=sig.mtime;
-					neu->walSize=sig.walSize;
-					neu->walMtime=sig.walMtime;
-					now=GetTickCount();
-					neu->builtTick=now ? now : 1;
+					neu->fromSqlite=0;
+					neu->dcimSig=ds ? ds : 1;
+					if (sig.present) {
+						neu->sqlFailed=1;
+						neu->failSize=sig.size;
+						neu->failMtime=sig.mtime;
+						neu->failWalSize=sig.walSize;
+						neu->failWalMtime=sig.walMtime;
+						now=GetTickCount();
+						neu->sqlFailTick=now ? now : 1;
+					}
 				}
 			}
-			if (!neu)
-				Log("photos sqlite unusable");
-		}
-		if (!neu) {
-			IoLock();
-			ULONGLONG ds=DcimSig(conn);
-			IoUnlock();
-			PhLock();
-			cur=FindLib(udid);
-			if (cur && !cur->fromSqlite && cur->dcimSig && cur->dcimSig==ds && cur->nalbums>0) {
-				if (sig.present) {
-					now=GetTickCount();
-					cur->sqlFailTick=now ? now : 1;
-				}
-				if (cur->russian!=russian)
-					ApplyLang(cur, russian);
-				BuildSignal();
-				PhUnlock();
-				return TRUE;
-			}
-			PhUnlock();
-			IoLock();
-			neu=BuildFromDcim(conn, russian);
-			IoUnlock();
-			if (neu && neu->nalbums<=0) {
+		} __except(EXCEPTION_EXECUTE_HANDLER) {
+			if (neu) {
 				FreeLib(neu);
 				neu=NULL;
 			}
-			if (neu) {
-				neu->fromSqlite=0;
-				neu->dcimSig=ds ? ds : 1;
-				if (sig.present) {
-					neu->sqlFailed=1;
-					neu->failSize=sig.size;
-					neu->failMtime=sig.mtime;
-					neu->failWalSize=sig.walSize;
-					neu->failWalMtime=sig.walMtime;
-					now=GetTickCount();
-					neu->sqlFailTick=now ? now : 1;
-				}
+			if (ioLocked) {
+				IoUnlock();
+				ioLocked=0;
 			}
+			Log("photos build exception");
 		}
 		PhLock();
 		if (!neu) {
@@ -2623,14 +2644,17 @@ void ApplePhotosShutdown(void)
 {
 	if (g_csState!=2)
 		return;
+	DWORD t0=GetTickCount();
 	for (;;) {
 		EnterCriticalSection(&g_cs);
 		if (!g_buildBusy)
 			break;
 		HANDLE ev=g_buildEvent;
 		LeaveCriticalSection(&g_cs);
+		if ((GetTickCount()-t0)>=5000)
+			break;
 		if (ev)
-			WaitForSingleObject(ev, INFINITE);
+			WaitForSingleObject(ev, 100);
 		else
 			Sleep(30);
 	}
@@ -2653,6 +2677,9 @@ void ApplePhotosShutdown(void)
 	}
 }
 
+/* Standalone selftest build:
+   cl /nologo /utf-8 /W3 /EHsc /DPHOTOS_SELFTEST apple_photos.cpp /Fe:photos_selftest.exe
+*/
 #ifdef PHOTOS_SELFTEST
 static int g_fail=0;
 static void Expect(int cond, const char* msg)
