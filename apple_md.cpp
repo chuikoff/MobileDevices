@@ -741,6 +741,8 @@ static BOOL AfcOpenAny(void* handle, afc_connection* out)
 	return ok;
 }
 
+static void AfcConnDiscard(afc_connection conn, int* sock);
+
 static BOOL EnsureSession(ApplePhone* p)
 {
 	if (!p || !p->dev)
@@ -762,10 +764,8 @@ static BOOL EnsureSession(ApplePhone* p)
 	AppleLock();
 	if (p->afc && p->afc!=conn) {
 		AppleUnlock();
-		if (pAFCConnectionClose) {
-			__try { pAFCConnectionClose(conn); } __except(EXCEPTION_EXECUTE_HANDLER) {}
-		}
-		CloseAppleSock(&sock);
+		/* AFCConnectionClose owns the socket. closesocket would close a reused handle. */
+		AfcConnDiscard(conn, &sock);
 		return TRUE;
 	}
 	p->sock=sock;

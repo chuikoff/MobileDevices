@@ -1384,6 +1384,8 @@ HRESULT GetFolderIDFromPathName(LPWSTR pPath,IEnumPortableDeviceObjectIDs** pEnu
 			*pDeviceContent=pContent;
 		else
 			SAFE_RELEASE(pContent);
+		/* This scan stored the last duplicate name. Keep the id we return. */
+		ObjCachePut(pPath, foundId);
 		*pStorageIDRetVal=foundId;
 		if (LastParentName)
 			CoTaskMemFree(LastParentName);

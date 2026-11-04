@@ -223,8 +223,7 @@ static void IoUnlock(void)
 
 static void WcsCopy(WCHAR* dst, int cch, const WCHAR* src);
 
-/* Called with PhLock held. Manual-reset event starts nonsignaled;
-   waiters block only while g_buildBusy is set. */
+/* Called with PhLock held. Manual-reset event starts nonsignaled. */
 static void BuildArm(const WCHAR* udid)
 {
 	if (!g_buildEvent)
@@ -243,14 +242,16 @@ static void BuildSignal(void)
 		SetEvent(g_buildEvent);
 }
 
-static void BuildWait(void)
+/* PhLock held on entry, released on return. FALSE means the 30s cap fired. */
+static BOOL BuildWait(void)
 {
 	HANDLE ev=g_buildEvent;
 	PhUnlock();
-	if (ev)
-		WaitForSingleObject(ev, 30000);
-	else
+	if (!ev) {
 		Sleep(30);
+		return FALSE;
+	}
+	return WaitForSingleObject(ev, 30000)==WAIT_OBJECT_0;
 }
 
 static void WcsCopy(WCHAR* dst, int cch, const WCHAR* src)
@@ -1820,7 +1821,8 @@ BOOL ApplePhotosEnsure(void* conn, const WCHAR* udid, int russian)
 	for (;;) {
 		PhLock();
 		if (g_buildBusy) {
-			BuildWait();
+			if (!BuildWait())
+				return FALSE;
 			continue;
 		}
 		PhUnlock();
@@ -2449,7 +2451,8 @@ BOOL ApplePhotosResolve(const WCHAR* udid, const char* virtUtf8, char* afcPath, 
 			PhUnlock();
 			return ok;
 		}
-		BuildWait();
+		if (!BuildWait())
+			return FALSE;
 		PhLock();
 	}
 }
@@ -2560,7 +2563,8 @@ BOOL ApplePhotosLoadThumb(void* conn, const WCHAR* udid, const char* virtUtf8, W
 		lib=FindLib(udid);
 		if (lib || !g_buildBusy)
 			break;
-		BuildWait();
+		if (!BuildWait())
+			return FALSE;
 		PhLock();
 	}
 	char asset[512];
@@ -2651,8 +2655,9 @@ void ApplePhotosShutdown(void)
 			break;
 		HANDLE ev=g_buildEvent;
 		LeaveCriticalSection(&g_cs);
+		/* Builder still holds IoLock across the sqlite pull. Freeing here deletes that section. */
 		if ((GetTickCount()-t0)>=5000)
-			break;
+			return;
 		if (ev)
 			WaitForSingleObject(ev, 100);
 		else
