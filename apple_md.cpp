@@ -223,6 +223,7 @@ static void DrainAppleNotes(void);
 #define AFK_PANIC_WAIT 5
 #define APPLE_PANIC_MAX 4096
 enum {
+	AR_INVALID=-1,
 	AR_ROOT=0,
 	AR_PHOTOS,
 	AR_PHOTOS_REL,
@@ -272,7 +273,18 @@ struct ApplePhone {
 	WCHAR product[40];
 	int napps;
 	AppleApp apps[APPLE_MAX_APPS];
+	int lastPaired;       /* 1=paired, 0=not paired, -1=not checked */
+	int lastLockdownErr;  /* 0=ok, else mach_error_t */
+	int lastAfcErr;       /* 0=ok, else 1 */
+	int lastHouseArrestErr;
+	int lastPanicErr;
+	WCHAR lastErrorOp[128];
+	WCHAR lastErrorTime[16];
+	DWORD lastErrorCode;
+	WCHAR lastErrorMsg[256];
 };
+static WCHAR g_mdLoadedPath[MAX_PATH]={0};
+static WCHAR g_mdLoadedVersion[64]={0};
 static ApplePhone g_phones[APPLE_MAX];
 static int g_nphones=0;
 static BOOL g_wsa=FALSE;
@@ -664,26 +676,55 @@ static void ClosePanicAfc(ApplePhone* p)
 	p->panicEnt=NULL;
 }
 
+static void SetPhoneLastError(ApplePhone* p, LPCWSTR op, DWORD code, LPCWSTR msg)
+{
+	if (!p) return;
+	SYSTEMTIME st;
+	GetLocalTime(&st);
+	swprintf_s(p->lastErrorTime, countof(p->lastErrorTime), L"%02d:%02d", st.wHour, st.wMinute);
+	wcslcpy(p->lastErrorOp, op ? op : L"", countof(p->lastErrorOp));
+	p->lastErrorCode=code;
+	wcslcpy(p->lastErrorMsg, msg ? msg : L"", countof(p->lastErrorMsg));
+}
+
 static BOOL EnsureLockdown(ApplePhone* p)
 {
 	if (!p || !p->dev)
 		return FALSE;
 	if (p->session)
 		return TRUE;
-	if (pAMDeviceConnect(p->dev)!=0)
+	if (!pAMDeviceConnect)
 		return FALSE;
-	if (!pAMDeviceIsPaired(p->dev)) {
-		pAMDeviceDisconnect(p->dev);
-		return FALSE;
-	}
-	if (pAMDeviceValidatePairing(p->dev)!=0) {
-		pAMDeviceDisconnect(p->dev);
+	mach_error_t err=pAMDeviceConnect(p->dev);
+	if (err!=0) {
+		p->lastLockdownErr=err;
+		SetPhoneLastError(p, L"Подключение", (DWORD)err, L"Не удалось подключиться к usbmuxd.");
 		return FALSE;
 	}
-	if (pAMDeviceStartSession(p->dev)!=0) {
-		pAMDeviceDisconnect(p->dev);
+	if (!pAMDeviceIsPaired || !pAMDeviceIsPaired(p->dev)) {
+		p->lastPaired=0;
+		p->lastLockdownErr=0xE800001A;
+		if (pAMDeviceDisconnect)
+			pAMDeviceDisconnect(p->dev);
+		SetPhoneLastError(p, L"Проверка доверия", 0xE800001A, L"iPhone не сопряжён. Нажмите «Доверять» на экране телефона.");
 		return FALSE;
 	}
+	p->lastPaired=1;
+	if (pAMDeviceValidatePairing && (err=pAMDeviceValidatePairing(p->dev))!=0) {
+		p->lastLockdownErr=err;
+		if (pAMDeviceDisconnect)
+			pAMDeviceDisconnect(p->dev);
+		SetPhoneLastError(p, L"Сопряжение", (DWORD)err, L"Ошибка сопряжения (введите код на iPhone).");
+		return FALSE;
+	}
+	if (pAMDeviceStartSession && (err=pAMDeviceStartSession(p->dev))!=0) {
+		p->lastLockdownErr=err;
+		if (pAMDeviceDisconnect)
+			pAMDeviceDisconnect(p->dev);
+		SetPhoneLastError(p, L"Сессия lockdown", (DWORD)err, L"Не удалось начать сессию lockdown.");
+		return FALSE;
+	}
+	p->lastLockdownErr=0;
 	p->session=TRUE;
 	return TRUE;
 }
@@ -754,13 +795,19 @@ static BOOL EnsureSession(ApplePhone* p)
 	if (p->afc)
 		return TRUE;
 	int sock=0;
-	if (!StartNamedService(p, "com.apple.afc", &sock))
-		return FALSE;
-	afc_connection conn=NULL;
-	if (!AfcOpenAny((void*)(intptr_t)(unsigned)sock, &conn) || !conn) {
-		CloseAppleSock(&sock);
+	if (!StartNamedService(p, "com.apple.afc", &sock)) {
+		p->lastAfcErr=1;
+		SetPhoneLastError(p, L"Файловый доступ (AFC)", 0xE8000001, L"com.apple.afc не запустился. Разблокируйте экран iPhone.");
 		return FALSE;
 	}
+	afc_connection conn=NULL;
+	if (!AfcOpenAny((void*)(intptr_t)(unsigned)sock, &conn) || !conn) {
+		p->lastAfcErr=2;
+		CloseAppleSock(&sock);
+		SetPhoneLastError(p, L"Файловый доступ (AFC)", 0xE8000002, L"AFCConnectionOpen не удалось инициализировать.");
+		return FALSE;
+	}
+	p->lastAfcErr=0;
 	AppleLock();
 	if (p->afc && p->afc!=conn) {
 		AppleUnlock();
@@ -883,6 +930,24 @@ static void XferAddKind(ApplePhone* p, int kind, int delta)
 		return;
 	if (delta<0)
 		SweepGonePhones();
+}
+
+static void PhonePinAfc(ApplePhone* p)
+{
+	if (!p)
+		return;
+	AppleLock();
+	XferAddKind(p, 1, 1);
+	AppleUnlock();
+}
+
+static void PhoneUnpinAfc(ApplePhone* p)
+{
+	if (!p)
+		return;
+	AppleLock();
+	XferAddKind(p, 1, -1);
+	AppleUnlock();
 }
 
 static void ClosePhone(ApplePhone* p)
@@ -1008,6 +1073,10 @@ static void ApplyAppleNotify(am_device dev, unsigned int msg)
 				slot=g_nphones;
 				ApplePhone* p=&g_phones[slot];
 				memset(p, 0, sizeof(*p));
+				p->lastPaired=-1;
+				p->lastAfcErr=-1;
+				p->lastHouseArrestErr=-1;
+				p->lastPanicErr=-1;
 				p->dev=dev;
 				CopyValue(dev, "DeviceName", p->name, 128);
 				CopyValue(dev, "UniqueDeviceID", p->udid, 80);
@@ -1441,6 +1510,14 @@ static BOOL LoadAppleDlls()
 	}
 	if (!g_cf || !g_md)
 		return FALSE;
+	if (g_md) {
+		GetModuleFileNameW(g_md, g_mdLoadedPath, MAX_PATH);
+		DWORD fMS=0, fLS=0, pMS=0, pLS=0;
+		if (DllResourceVersion(g_mdLoadedPath, &fMS, &fLS, &pMS, &pLS))
+			swprintf_s(g_mdLoadedVersion, countof(g_mdLoadedVersion), L"%u.%u.%u.%u", HIWORD(fMS), LOWORD(fMS), HIWORD(fLS), LOWORD(fLS));
+		else
+			wcslcpy(g_mdLoadedVersion, L"1.0.0.0", countof(g_mdLoadedVersion));
+	}
 	if (!BindAppleProcs())
 		return FALSE;
 	if (!g_wsa) {
@@ -1462,6 +1539,24 @@ static BOOL LoadAppleDlls()
 void AppleMdInit(void)
 {
 	LoadAppleDlls();
+}
+
+BOOL AppleMdGetDllInfo(WCHAR* path, int pathcch, WCHAR* version, int vercch)
+{
+	AppleLock();
+	BOOL ok=(g_md!=NULL);
+	if (ok) {
+		if (path && pathcch>0) wcslcpy(path, g_mdLoadedPath, pathcch);
+		if (version && vercch>0) wcslcpy(version, g_mdLoadedVersion, vercch);
+	} else {
+		WCHAR pkg[MAX_PATH];
+		if (FindApplePackage(pkg, MAX_PATH)) {
+			if (path && pathcch>0) wcslcpy(path, pkg, pathcch);
+			if (version && vercch>0) wcslcpy(version, L"пакет найден, dll не загружен", vercch);
+		}
+	}
+	AppleUnlock();
+	return ok;
 }
 
 static void MdLog(const char* line);
@@ -1513,43 +1608,19 @@ void AppleMdShutdown(void)
 		ShutdownClosePhones();
 	} else {
 		for (int i=0;i<g_nphones;i++) {
-			if (g_phones[i].panicBusy)
-				continue;
-			LONG a=g_phones[i].afcXfer;
-			LONG b=g_phones[i].appXfer;
-			LONG c=g_phones[i].panicXfer;
-			g_phones[i].afcXfer=0;
-			g_phones[i].appXfer=0;
-			g_phones[i].panicXfer=0;
-			g_phones[i].xferGone=FALSE;
-			DropPhoneSession(&g_phones[i]);
-			g_phones[i].afcXfer=a;
-			g_phones[i].appXfer=b;
-			g_phones[i].panicXfer=c;
+			if (!PhoneXferBusy(&g_phones[i]) && !g_phones[i].panicBusy)
+				ClosePhone(&g_phones[i]);
+			else
+				g_phones[i].xferGone=TRUE;
 		}
 	}
 	AppleUnlock();
-	if (busy) {
-		DWORD t1=GetTickCount();
-		for (;;) {
-			AppleLock();
-			busy=AnyXferBusy() || AnyPanicBusy();
-			if (!busy)
-				ShutdownClosePhones();
-			AppleUnlock();
-			if (!busy)
-				break;
-			if (GetTickCount()-t1>=2000)
-				break;
-			Sleep(20);
-		}
-	}
-	ApplePhotosShutdown();
 	if (g_appleCsInit) {
 		AppleLock();
 		BOOL still=AnyXferBusy() || AnyPanicBusy();
 		AppleUnlock();
 		if (!still) {
+			ApplePhotosShutdown();
 			DeleteCriticalSection(&g_appleCs);
 			g_appleCsInit=FALSE;
 			if (g_noteCsInit) {
@@ -1667,7 +1738,44 @@ static void InfoCacheClear(LPCWSTR name)
 	}
 }
 
-BOOL AppleMdFillInfo(LPCWSTR deviceName, PluginDeviceInfo* info)
+static BOOL PanicFailCooling(const ApplePhone* p);
+static BOOL RefreshApps(ApplePhone* p);
+static BOOL EnsureAppAfc(ApplePhone* p, LPCWSTR appName, BOOL preferDocuments, BOOL skipDocuments);
+static BOOL EnsurePanicAfc(ApplePhone* p);
+
+static void FillAppleDiagnostics(const ApplePhone* p, PluginDeviceInfo* info)
+{
+	if (!p || !info)
+		return;
+	info->applePaired=p->lastPaired;
+	info->appleLockdown=p->session ? 1 : (p->lastLockdownErr!=0 ? 0 : -1);
+	info->appleAfc=p->afc ? 1 : (p->lastAfcErr > 0 ? 0 : -1);
+	info->appleHouseArrest=p->appAfc ? 1 : (p->lastHouseArrestErr > 0 ? 0 : -1);
+	if (p->panicBusy)
+		info->appleLogs=2;
+	else if (PanicFailCooling(p))
+		info->appleLogs=3;
+	else if (p->panicAfc)
+		info->appleLogs=1;
+	else if (p->lastPanicErr > 0)
+		info->appleLogs=0;
+	else
+		info->appleLogs=-1;
+
+	if (p->afc)
+		info->appleUnlocked=1;
+	else if (p->session && p->lastAfcErr > 0)
+		info->appleUnlocked=0;
+	else
+		info->appleUnlocked=-1;
+
+	wcslcpy(info->lastErrorOp, p->lastErrorOp, countof(info->lastErrorOp));
+	wcslcpy(info->lastErrorTime, p->lastErrorTime, countof(info->lastErrorTime));
+	info->lastErrorCode=p->lastErrorCode;
+	wcslcpy(info->lastErrorMsg, p->lastErrorMsg, countof(info->lastErrorMsg));
+}
+
+BOOL AppleMdFillInfoEx(LPCWSTR deviceName, PluginDeviceInfo* info, BOOL activeDiagnose)
 {
 	if (!info || !deviceName)
 		return FALSE;
@@ -1675,16 +1783,41 @@ BOOL AppleMdFillInfo(LPCWSTR deviceName, PluginDeviceInfo* info)
 	info->battery=-1;
 	info->batteryHealth=-1;
 	info->batteryCycles=-1;
+	info->hasConnectionInfo=TRUE;
+	info->isApple=TRUE;
+	info->isDiagnose=activeDiagnose;
+	info->applePaired=-1;
+	info->appleLockdown=-1;
+	info->appleAfc=-1;
+	info->appleHouseArrest=-1;
+	info->appleLogs=-1;
+	info->appleUnlocked=-1;
+
 	AppleLock();
-	if (InfoCacheCopy(deviceName, info)) {
+	info->mdDllLoaded=(g_mdLoadedPath[0]!=0);
+	wcslcpy(info->mdDllPath, g_mdLoadedPath, countof(info->mdDllPath));
+	wcslcpy(info->mdDllVersion, g_mdLoadedVersion, countof(info->mdDllVersion));
+
+	if (!activeDiagnose && InfoCacheCopy(deviceName, info)) {
+		info->hasConnectionInfo=TRUE;
+		info->isApple=TRUE;
+		info->isDiagnose=FALSE;
+		info->mdDllLoaded=(g_mdLoadedPath[0]!=0);
+		wcslcpy(info->mdDllPath, g_mdLoadedPath, countof(info->mdDllPath));
+		wcslcpy(info->mdDllVersion, g_mdLoadedVersion, countof(info->mdDllVersion));
+		ApplePhone* p=FindPhoneByName(deviceName);
+		if (p)
+			FillAppleDiagnostics(p, info);
 		AppleUnlock();
 		return TRUE;
 	}
+
 	ApplePhone* p=FindPhoneByName(deviceName);
 	if (!p) {
 		AppleUnlock();
 		return FALSE;
 	}
+
 	wcslcpy(info->manufacturer, L"Apple", 128);
 	if (p->ios[0] && p->build[0])
 		swprintf_s(info->firmware, countof(info->firmware), L"%s (%s)", p->ios, p->build);
@@ -1695,7 +1828,22 @@ BOOL AppleMdFillInfo(LPCWSTR deviceName, PluginDeviceInfo* info)
 	if (p->ios[0])
 		swprintf_s(info->os, countof(info->os), L"iOS %s", p->ios);
 
-	EnsureLockdown(p);
+	if (activeDiagnose) {
+		EnsureLockdown(p);
+		if (p->session) {
+			EnsureSession(p);
+			RefreshApps(p);
+			if (p->napps>0)
+				EnsureAppAfc(p, p->apps[0].name, FALSE, FALSE);
+			EnsurePanicAfc(p);
+		}
+	} else {
+		if (!p->session)
+			EnsureLockdown(p);
+	}
+
+	FillAppleDiagnostics(p, info);
+
 	/* Prefer human MarketingName when lockdown provides it; else ProductType. */
 	CopyValue(p->dev, "MarketingName", info->model, 128);
 	if (!info->model[0])
@@ -1712,19 +1860,13 @@ BOOL AppleMdFillInfo(LPCWSTR deviceName, PluginDeviceInfo* info)
 	if (bat>=0 && bat<=100)
 		info->battery=bat;
 
-	/* CycleCount — omit if missing. Tried also BatteryCycleCount (not used if absent). */
+	/* CycleCount вЂ” omit if missing. Tried also BatteryCycleCount (not used if absent). */
 	int cycles=CopyValueInt(p->dev, batDom, "CycleCount");
 	if (cycles<0)
 		cycles=CopyValueInt(p->dev, batDom, "BatteryCycleCount");
 	if (cycles>=0)
 		info->batteryCycles=cycles;
 
-	/*
-	 * Maximum capacity % from DesignCapacity vs AppleRawMaxCapacity /
-	 * NominalChargeCapacity / MaxCapacity. Direct keys tried (omit if absent):
-	 * MaximumCapacityPercent, BatteryHealth, GasGaugeBatteryHealth.
-	 * Do not claim health if design/max unavailable.
-	 */
 	int directHealth=CopyValueInt(p->dev, batDom, "MaximumCapacityPercent");
 	if (directHealth<0 || directHealth>100)
 		directHealth=CopyValueInt(p->dev, batDom, "BatteryHealth");
@@ -1751,7 +1893,7 @@ BOOL AppleMdFillInfo(LPCWSTR deviceName, PluginDeviceInfo* info)
 
 	ULONGLONG cap=0, freeb=0;
 	BOOL sawAfcFree=FALSE;
-	if (EnsureSession(p) && p->afc && pAFCDeviceInfoOpen && pAFCKeyValueRead) {
+	if (p->afc && pAFCDeviceInfoOpen && pAFCKeyValueRead) {
 		afc_dictionary dict=NULL;
 		if (pAFCDeviceInfoOpen(p->afc, &dict)==0 && dict) {
 			for (;;) {
@@ -1774,12 +1916,6 @@ BOOL AppleMdFillInfo(LPCWSTR deviceName, PluginDeviceInfo* info)
 	/* disk_usage (+ .factory fallback). Photo/app keys tried if present. */
 	static const char* diskDom="com.apple.disk_usage";
 	static const char* diskFactory="com.apple.disk_usage.factory";
-	/*
-	 * iOS 17+ TotalDataAvailable includes purgeable caches. AmountDataAvailable
-	 * is the space the user can use (Settings / AFC FSFreeBytes). Data used is
-	 * capacity minus TotalDataAvailable. The gap is purgeable, so
-	 * System + Data + Purgeable + Free matches the disk.
-	 */
 	ULONGLONG totalDisk=0, dataCap=0, totalAvail=0, amountAvail=0, sysCap=0, sysAvail=0;
 	ULONGLONG photo=0, apps=0;
 	BOOL haveTotal=FALSE, haveAmount=FALSE;
@@ -1801,7 +1937,6 @@ BOOL AppleMdFillInfo(LPCWSTR deviceName, PluginDeviceInfo* info)
 	CopyValueU64(p->dev, diskDom, "TotalSystemAvailable", &sysAvail);
 	if (!sysAvail)
 		CopyValueU64(p->dev, diskFactory, "TotalSystemAvailable", &sysAvail);
-	/* Optional usage keys — skip silently when lockdown omits them. */
 	if (!CopyValueU64(p->dev, diskDom, "PhotoDataUsage", &photo))
 		if (!CopyValueU64(p->dev, diskDom, "PhotoUsage", &photo))
 			CopyValueU64(p->dev, diskFactory, "PhotoDataUsage", &photo);
@@ -1835,11 +1970,16 @@ BOOL AppleMdFillInfo(LPCWSTR deviceName, PluginDeviceInfo* info)
 		info->stor[n].freeBytes=userFree;
 		info->nstor++;
 	}
-	InfoCacheStore(deviceName, info);
+	if (!activeDiagnose)
+		InfoCacheStore(deviceName, info);
 	AppleUnlock();
 	return TRUE;
 }
 
+BOOL AppleMdFillInfo(LPCWSTR deviceName, PluginDeviceInfo* info)
+{
+	return AppleMdFillInfoEx(deviceName, info, FALSE);
+}
 static void ToUtf8Slash(LPCWSTR w, char* u, int cch)
 {
 	if (!u || cch<=0)
@@ -1884,49 +2024,62 @@ static int ParseAppleRel(LPCWSTR rel, WCHAR* appOut, int appcch, char* afcOut, i
 	} else
 		wcslcpy(first, p, 128);
 
+	int res=AR_ROOT;
 	if (_wcsicmp(first, APPLE_PHOTOS)==0) {
 		if (!slash || !slash[1])
-			return AR_PHOTOS;
-		ToUtf8Slash(slash+1, afcOut, afccch);
-		return AR_PHOTOS_REL;
-	}
-	if (_wcsicmp(first, L"DCIM")==0) {
+			res=AR_PHOTOS;
+		else {
+			ToUtf8Slash(slash+1, afcOut, afccch);
+			res=AR_PHOTOS_REL;
+		}
+	} else if (_wcsicmp(first, L"DCIM")==0) {
 		if (!slash || !slash[1]) {
 			if (afcOut && afccch>0)
 				AfcCopyStr(afcOut, (size_t)afccch, "DCIM");
-			return AR_DCIM_RAW;
+			res=AR_DCIM_RAW;
+		} else {
+			ToUtf8Slash(rel, afcOut, afccch);
+			res=AR_DCIM_RAW;
 		}
-		ToUtf8Slash(rel, afcOut, afccch);
-		return AR_DCIM_RAW;
-	}
-	if (_wcsicmp(first, APPLE_APPS)==0) {
+	} else if (_wcsicmp(first, APPLE_APPS)==0) {
 		if (!slash || !slash[1])
-			return AR_APPS;
-		WCHAR* s2=wcschr(slash+1, '\\');
-		if (!s2) {
-			if (appOut)
-				wcslcpy(appOut, slash+1, appcch);
-			if (afcOut)
-				afcOut[0]=0;
-			return AR_APP;
+			res=AR_APPS;
+		else {
+			WCHAR* s2=wcschr(slash+1, '\\');
+			if (!s2) {
+				if (appOut)
+					wcslcpy(appOut, slash+1, appcch);
+				if (afcOut)
+					afcOut[0]=0;
+				res=AR_APP;
+			} else {
+				*s2=0;
+				if (appOut)
+					wcslcpy(appOut, slash+1, appcch);
+				ToUtf8Slash(s2+1, afcOut, afccch);
+				res=AR_APP_REL;
+			}
 		}
-		*s2=0;
-		if (appOut)
-			wcslcpy(appOut, slash+1, appcch);
-		ToUtf8Slash(s2+1, afcOut, afccch);
-		return AR_APP_REL;
-	}
-	/* Old Total Commander paths still say "Panic Logs". */
-	if (_wcsicmp(first, APPLE_PANICS)==0 || _wcsicmp(first, L"Panic Logs")==0) {
+	} else if (_wcsicmp(first, APPLE_PANICS)==0 || _wcsicmp(first, L"Panic Logs")==0) {
+		/* Old Total Commander paths still say "Panic Logs". */
 		if (!slash || !slash[1])
-			return AR_PANICS;
-		ToUtf8Slash(slash+1, afcOut, afccch);
-		return AR_PANICS_REL;
+			res=AR_PANICS;
+		else {
+			ToUtf8Slash(slash+1, afcOut, afccch);
+			res=AR_PANICS_REL;
+		}
+	} else {
+		ToUtf8Slash(p, afcOut, afccch);
+		if (afcOut && afccch>0)
+			AfcPrepend(afcOut, (size_t)afccch, "DCIM/");
+		res=AR_DCIM_RAW;
 	}
-	ToUtf8Slash(p, afcOut, afccch);
-	if (afcOut && afccch>0)
-		AfcPrepend(afcOut, (size_t)afccch, "DCIM/");
-	return AR_DCIM_RAW;
+
+	if (afcOut && afcOut[0] && AfcPathHasDotDot(afcOut))
+		return AR_INVALID;
+	if (appOut && appOut[0] && (wcscmp(appOut, L"..")==0 || wcsstr(appOut, L"..")))
+		return AR_INVALID;
+	return res;
 }
 
 static void FillDirFd(LPCWSTR name, WIN32_FIND_DATAW* fd)
@@ -3065,7 +3218,7 @@ static BOOL EnsureAppAfc(ApplePhone* p, LPCWSTR appName, BOOL preferDocuments, B
 	if (p->appAfc && _stricmp(p->appBundle, a->bundle)==0)
 		return TRUE;
 	if (p->appXfer)
-		return p->appAfc!=NULL;
+		return FALSE;
 	CloseAppAfc(p);
 	UNREFERENCED_PARAMETER(preferDocuments);
 	UNREFERENCED_PARAMETER(skipDocuments);
@@ -3075,10 +3228,13 @@ static BOOL EnsureAppAfc(ApplePhone* p, LPCWSTR appName, BOOL preferDocuments, B
 	char root[40];
 	root[0]=0;
 	if (!AppDocumentsOpen(p, a->bundle, &conn, &sock, &docsOnly, root, (int)sizeof(root), skipDocuments)) {
+		p->lastHouseArrestErr=1;
+		SetPhoneLastError(p, L"Документы приложений", 0xE8000001, L"house_arrest не открылся.");
 		AfcCopyStr(p->appMiss, countof(p->appMiss), a->bundle);
 		p->appMissTick=GetTickCount();
 		return FALSE;
 	}
+	p->lastHouseArrestErr=0;
 	p->appMiss[0]=0;
 	p->appAfc=conn;
 	p->appSock=sock;
@@ -3382,8 +3538,23 @@ static DWORD WINAPI PanicOpenThread(LPVOID arg)
 		if (nent<0)
 			nent=0;
 	}
-	if (!ok && !j->cancel)
+	if (!ok && !j->cancel) {
 		MdLog("panic open fail");
+		AppleLock();
+		ApplePhone* p2=PanicJobPhone(j);
+		if (p2) {
+			p2->lastPanicErr=1;
+			SetPhoneLastError(p2, L"Журналы (Logs)", 0xE8000001, L"crashreport не запустился.");
+		}
+		AppleUnlock();
+	}
+	if (ok && !j->cancel) {
+		AppleLock();
+		ApplePhone* p2=PanicJobPhone(j);
+		if (p2)
+			p2->lastPanicErr=0;
+		AppleUnlock();
+	}
 	if (j->cancel || !ok) {
 		PanicDiscard(conn, svc);
 		free(ents);
@@ -3581,7 +3752,9 @@ static BOOL ResolveAfc(ApplePhone* p, LPCWSTR rel, afc_connection* conn, char* p
 	WCHAR app[128];
 	char relAfc[1024];
 	int kind=ParseAppleRel(rel, app, 128, relAfc, 1024);
-	if (kind==AR_ROOT || kind==AR_APPS)
+	if (kind<=AR_ROOT || kind==AR_APPS)
+		return FALSE;
+	if (relAfc[0] && AfcPathHasDotDot(relAfc))
 		return FALSE;
 	if (kind==AR_DCIM_RAW) {
 		if (!EnsureSession(p) || !p->afc)
@@ -3812,6 +3985,10 @@ BOOL AppleMdFindFirst(LPCWSTR deviceName, LPCWSTR relPath, WIN32_FIND_DATAW* fd,
 	WCHAR app[128];
 	char afcPath[1024];
 	int kind=ParseAppleRel(relPath, app, 128, afcPath, 1024);
+	if (kind<0) {
+		AppleUnlock();
+		return FALSE;
+	}
 	AppleFind* f=NULL;
 
 	int phoneIdx=(int)(p-g_phones);
@@ -3828,6 +4005,8 @@ BOOL AppleMdFindFirst(LPCWSTR deviceName, LPCWSTR relPath, WIN32_FIND_DATAW* fd,
 
 	/* Never call Apple StartService / AFCDirectoryOpen while holding AppleLock:
 	   CFRunLoop callbacks need the same lock. */
+	if (kind==AR_PHOTOS || kind==AR_PHOTOS_REL)
+		XferAddKind(p, 1, 1);
 	AppleUnlock();
 
 	if (kind==AR_APPS) {
@@ -3896,23 +4075,25 @@ BOOL AppleMdFindFirst(LPCWSTR deviceName, LPCWSTR relPath, WIN32_FIND_DATAW* fd,
 		return TRUE;
 	}
 	if (kind==AR_PHOTOS || kind==AR_PHOTOS_REL) {
-		p=PhoneAfterUnlock(phoneIdx, phoneKey);
-		if (!p)
-			return FALSE;
 		ApplePhotosBind();
-		if (!EnsureSession(p) || !p->afc)
+		if (!EnsureSession(p) || !p->afc) {
+			PhoneUnpinAfc(p);
 			return FALSE;
+		}
 		WCHAR key[80];
 		PhoneKey(p, key, 80);
 		const char* virt=(kind==AR_PHOTOS) ? "" : afcPath;
 		WIN32_FIND_DATAW* ents=NULL;
 		int nent=0;
 		int ru=GetPluginUiLanguage()==1;
-		if (!ApplePhotosList(p->afc, key, virt, ru, &ents, &nent) || nent<=0) {
+		BOOL ok=ApplePhotosList(p->afc, key, virt, ru, &ents, &nent);
+		PhoneUnpinAfc(p);
+		if (!ok || nent<=0) {
 			free(ents);
 			return FALSE;
 		}
 		AppleLock();
+		phoneIdx=(int)(p-g_phones);
 		f=NewFind(phoneIdx, AFK_AFC);
 		if (!f) {
 			free(ents);
@@ -4054,20 +4235,15 @@ int AppleMdLoadPhotoThumb(LPCWSTR deviceName, LPCWSTR relPath, WCHAR* localJpeg,
 		AppleUnlock();
 		return 0;
 	}
-	int phoneIdx=(int)(p-g_phones);
 	WCHAR key[80];
 	PhoneKey(p, key, 80);
+	XferAddKind(p, 1, 1);
 	AppleUnlock();
-	if (phoneIdx<0 || phoneIdx>=g_nphones)
-		return 0;
-	p=&g_phones[phoneIdx];
-	WCHAR key2[80];
-	PhoneKey(p, key2, 80);
-	if (_wcsicmp(key, key2)!=0)
-		return 0;
-	if (!EnsureSession(p) || !p->afc)
-		return 0;
-	return ApplePhotosLoadThumb(p->afc, key, parsed, localJpeg, cch) ? 1 : 0;
+	BOOL ok=FALSE;
+	if (EnsureSession(p) && p->afc)
+		ok=ApplePhotosLoadThumb(p->afc, key, parsed, localJpeg, cch);
+	PhoneUnpinAfc(p);
+	return ok ? 1 : 0;
 }
 
 int AppleMdGetFile(LPCWSTR deviceName, LPCWSTR relPath, LPCWSTR localPath, ULONGLONG totalHint, FILETIME* mtime)
@@ -4085,18 +4261,12 @@ int AppleMdGetFile(LPCWSTR deviceName, LPCWSTR relPath, LPCWSTR localPath, ULONG
 	if (kind==AR_PHOTOS || kind==AR_PHOTOS_REL) {
 		WCHAR key[80];
 		PhoneKey(p, key, 80);
+		XferAddKind(p, 1, 1);
 		AppleUnlock();
 		ApplePhotosBind();
-		if (phoneIdx<0 || phoneIdx>=g_nphones)
-			return FS_FILE_READERROR;
-		p=&g_phones[phoneIdx];
-		WCHAR key2[80];
-		PhoneKey(p, key2, 80);
-		if (_wcsicmp(key, key2)!=0)
-			return FS_FILE_READERROR;
-		if (!EnsureSession(p) || !p->afc)
-			return FS_FILE_READERROR;
-		if (!ApplePhotosEnsure(p->afc, key, GetPluginUiLanguage()==1))
+		BOOL okEns=EnsureSession(p) && p->afc && ApplePhotosEnsure(p->afc, key, GetPluginUiLanguage()==1);
+		PhoneUnpinAfc(p);
+		if (!okEns)
 			return FS_FILE_NOTFOUND;
 		AppleLock();
 		p=FindPhoneByName(deviceName);
@@ -4237,7 +4407,7 @@ BOOL AppleMdDelete(LPCWSTR deviceName, LPCWSTR relPath)
 	WCHAR app[128];
 	char afcPath[1024];
 	int kind=ParseAppleRel(relPath, app, 128, afcPath, 1024);
-	if (kind==AR_ROOT || kind==AR_PHOTOS || kind==AR_APPS || kind==AR_APP || kind==AR_PANICS)
+	if (kind<=AR_ROOT || kind==AR_PHOTOS || kind==AR_APPS || kind==AR_APP || kind==AR_PANICS)
 		return FALSE;
 	if (kind==AR_PHOTOS_REL) {
 		ApplePhotosBind();
@@ -4247,46 +4417,37 @@ BOOL AppleMdDelete(LPCWSTR deviceName, LPCWSTR relPath)
 			AppleUnlock();
 			return FALSE;
 		}
-		int phoneIdx=(int)(ph-g_phones);
 		WCHAR key[80];
 		PhoneKey(ph, key, 80);
+		XferAddKind(ph, 1, 1);
 		AppleUnlock();
-		if (phoneIdx<0 || phoneIdx>=g_nphones)
+		if (!EnsureSession(ph) || !ph->afc) {
+			PhoneUnpinAfc(ph);
 			return FALSE;
-		ph=&g_phones[phoneIdx];
-		WCHAR key2[80];
-		PhoneKey(ph, key2, 80);
-		if (_wcsicmp(key, key2)!=0)
-			return FALSE;
-		if (!EnsureSession(ph) || !ph->afc)
-			return FALSE;
-		if (!ApplePhotosEnsure(ph->afc, key, GetPluginUiLanguage()==1))
-			return FALSE;
+		}
+		BOOL okEns=ApplePhotosEnsure(ph->afc, key, GetPluginUiLanguage()==1);
 		char real[1024];
-		if (!ApplePhotosResolve(key, afcPath, real, 1024)) {
-			MdLog("photos delete resolve fail");
-			return FALSE;
-		}
-		AppleLock();
-		ph=FindPhoneByName(deviceName);
-		if (!ph || !ph->afc) {
-			AppleUnlock();
-			return FALSE;
-		}
-		afc_connection conn=ph->afc;
-		AppleUnlock();
+		BOOL okRes=okEns && ApplePhotosResolve(key, afcPath, real, 1024);
 		int err=-1;
-		if (pAFCRemovePath) {
+		if (okRes && ph->afc && pAFCRemovePath) {
 			__try {
-				err=pAFCRemovePath(conn, real);
+				err=pAFCRemovePath(ph->afc, real);
 			} __except(EXCEPTION_EXECUTE_HANDLER) {
 				err=-1;
 			}
+			if (err!=0) {
+				ULONGLONG sz=0;
+				if (PhotoStat(ph->afc, real, &sz, NULL, NULL)==0)
+					err=0;
+			}
 		}
-		if (err!=0) {
-			ULONGLONG sz=0;
-			if (PhotoStat(conn, real, &sz, NULL, NULL)==0)
-				err=0;
+		PhoneUnpinAfc(ph);
+		if (!okRes) {
+			if (!okEns)
+				MdLog("photos delete ensure fail");
+			else
+				MdLog("photos delete resolve fail");
+			return FALSE;
 		}
 		char line[240];
 		_snprintf_s(line, sizeof(line), _TRUNCATE, "photos delete err=%d %s", err, real);
@@ -4298,13 +4459,15 @@ BOOL AppleMdDelete(LPCWSTR deviceName, LPCWSTR relPath)
 	}
 	AppleLock();
 	ApplePhone* p=FindPhoneByName(deviceName);
-	afc_connection conn=NULL;
-	if (!p || !ResolveAfc(p, relPath, &conn, afcPath, 1024, TRUE) || !conn) {
-		AppleUnlock();
-		return FALSE;
-	}
-	BOOL ok=AfcDeleteTree(conn, afcPath);
 	AppleUnlock();
+	if (!p)
+		return FALSE;
+	afc_connection conn=NULL;
+	if (!ResolveAfc(p, relPath, &conn, afcPath, 1024, TRUE) || !conn)
+		return FALSE;
+	BOOL ok=AfcDeleteTree(conn, afcPath);
+	if (!ok)
+		SetPhoneLastError(p, L"Удаление", 0xE8000001, L"Не удалось удалить файл через AFC.");
 	return ok;
 }
 
@@ -4313,21 +4476,20 @@ BOOL AppleMdMkDir(LPCWSTR deviceName, LPCWSTR relPath)
 	WCHAR app[128];
 	char afcPath[1024];
 	int kind=ParseAppleRel(relPath, app, 128, afcPath, 1024);
-	if (kind==AR_ROOT || kind==AR_PHOTOS || kind==AR_PHOTOS_REL || kind==AR_APPS || kind==AR_APP ||
+	if (kind<=AR_ROOT || kind==AR_PHOTOS || kind==AR_PHOTOS_REL || kind==AR_APPS || kind==AR_APP ||
 		kind==AR_PANICS || kind==AR_PANICS_REL)
 		return FALSE;
 	if (!pAFCDirectoryCreate)
 		return FALSE;
 	AppleLock();
 	ApplePhone* p=FindPhoneByName(deviceName);
-	afc_connection conn=NULL;
-	if (!p || !ResolveAfc(p, relPath, &conn, afcPath, 1024, TRUE) || !conn) {
-		AppleUnlock();
-		return FALSE;
-	}
-	BOOL ok=pAFCDirectoryCreate(conn, afcPath)==0;
 	AppleUnlock();
-	return ok;
+	if (!p)
+		return FALSE;
+	afc_connection conn=NULL;
+	if (!ResolveAfc(p, relPath, &conn, afcPath, 1024, TRUE) || !conn)
+		return FALSE;
+	return pAFCDirectoryCreate(conn, afcPath)==0;
 }
 
 static const char* AfcBaseName(const char* path)
@@ -4424,8 +4586,11 @@ static void PutLock(volatile BOOL* locked)
 
 static void PutUnlock(volatile BOOL* locked)
 {
-	if (locked)
+	if (locked) {
+		if (!*locked)
+			return;
 		*locked=FALSE;
+	}
 	AppleUnlock();
 }
 
@@ -4435,29 +4600,21 @@ static int AppleMdPutFileWork(LPCWSTR deviceName, LPCWSTR relPath, LPCWSTR local
 	WCHAR app[128];
 	char afcPath[1024];
 	int kind=ParseAppleRel(relPath, app, 128, afcPath, 1024);
-	if (kind==AR_ROOT || kind==AR_PHOTOS || kind==AR_PHOTOS_REL || kind==AR_APPS || kind==AR_APP ||
-		kind==AR_PANICS || kind==AR_PANICS_REL)
+	if (kind!=AR_APP_REL)
 		return FS_FILE_NOTSUPPORTED;
 	if (!pAFCFileRefWrite)
 		return FS_FILE_NOTSUPPORTED;
 	PutLock(locked);
 	ApplePhone* p=FindPhoneByName(deviceName);
-	if (!p) {
-		PutUnlock(locked);
-		return FS_FILE_WRITEERROR;
-	}
-	p->appXfer++;
-	if (xferPhone)
-		*xferPhone=p;
 	PutUnlock(locked);
+	if (!p)
+		return FS_FILE_WRITEERROR;
 	/* CreateHouseArrest / StartService must run without AppleLock:
 	   the device run loop takes the same lock. */
 	afc_connection conn=NULL;
 	if (!ResolveAfc(p, relPath, &conn, afcPath, 1024, TRUE) || !conn) {
 		MdLog("put no session");
-		/* xferPhone stays set. AppleMdPutFile drops appXfer after the
-		   call returns, on this path as well as after an exception.
-		   Do not decrement here: that would run twice. */
+		SetPhoneLastError(p, L"Загрузка в приложение", 0xE8000001, L"house_arrest не открылся.");
 		return FS_FILE_WRITEERROR;
 	}
 	PutLock(locked);
@@ -4466,6 +4623,15 @@ static int AppleMdPutFileWork(LPCWSTR deviceName, LPCWSTR relPath, LPCWSTR local
 		PutUnlock(locked);
 		return FS_FILE_WRITEERROR;
 	}
+	AppleApp* a=FindAppByName(p, app);
+	if (!a || !p->appAfc || p->appAfc!=conn || _stricmp(p->appBundle, a->bundle)!=0) {
+		PutUnlock(locked);
+		return FS_FILE_WRITEERROR;
+	}
+	p->appXfer++;
+	if (xferPhone)
+		*xferPhone=p;
+	PutUnlock(locked); /* unlock around I/O. appXfer pins the connection. */
 	if (!overwrite && pAFCFileInfoOpen) {
 		afc_dictionary dict=NULL;
 		int infoErr=-1;
@@ -4473,15 +4639,12 @@ static int AppleMdPutFileWork(LPCWSTR deviceName, LPCWSTR relPath, LPCWSTR local
 		__except(EXCEPTION_EXECUTE_HANDLER) { infoErr=-1; dict=NULL; }
 		if (infoErr==0 && dict) {
 			AfcDictClose(dict);
-			PutUnlock(locked);
 			return FS_FILE_EXISTS;
 		}
 	}
 	HANDLE in=CreateFileT((WCHAR*)localPath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
-	if (in==INVALID_HANDLE_VALUE) {
-		PutUnlock(locked);
+	if (in==INVALID_HANDLE_VALUE)
 		return FS_FILE_READERROR;
-	}
 	afc_file_ref ref=0;
 	char usedPath[1024];
 	usedPath[0]=0;
@@ -4490,7 +4653,7 @@ static int AppleMdPutFileWork(LPCWSTR deviceName, LPCWSTR relPath, LPCWSTR local
 		_snprintf_s(line, countof(line), _TRUNCATE, "put fail %s", afcPath);
 		MdLog(line);
 		CloseHandle(in);
-		PutUnlock(locked);
+		SetPhoneLastError(p, L"Загрузка в приложение", 0xE8000002, L"Не удалось открыть файл на устройстве.");
 		return FS_FILE_WRITEERROR;
 	}
 	if (usedPath[0])
@@ -4548,11 +4711,11 @@ static int AppleMdPutFileWork(LPCWSTR deviceName, LPCWSTR relPath, LPCWSTR local
 		result=FS_FILE_WRITEERROR;
 
 	SafeAfcFileClose(conn, ref);
-	if (result!=FS_FILE_OK && totalcopied==0 && afcPath[0] && pAFCRemovePath) {
+	if (result!=FS_FILE_OK && afcPath[0] && pAFCRemovePath) {
 		__try { pAFCRemovePath(conn, afcPath); } __except(EXCEPTION_EXECUTE_HANDLER) {}
 	}
 	CloseHandle(in);
-	/* appXfer and AppleLock stay for AppleMdPutFile, including its __except. */
+	/* appXfer is dropped by AppleMdPutFile. */
 	return result;
 }
 

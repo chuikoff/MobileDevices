@@ -11,6 +11,8 @@ int AppleMdCount(void);
 BOOL AppleMdGetName(int index, WCHAR* name, int cch);
 BOOL AppleMdIsDeviceName(LPCWSTR name);
 BOOL AppleMdFillInfo(LPCWSTR deviceName, PluginDeviceInfo* info);
+BOOL AppleMdFillInfoEx(LPCWSTR deviceName, PluginDeviceInfo* info, BOOL activeDiagnose);
+BOOL AppleMdGetDllInfo(WCHAR* path, int pathcch, WCHAR* version, int vercch);
 BOOL AppleMdFindFirst(LPCWSTR deviceName, LPCWSTR relPath, WIN32_FIND_DATAW* fd, HANDLE* out);
 BOOL AppleMdFindNext(HANDLE h, WIN32_FIND_DATAW* fd);
 void AppleMdFindClose(HANDLE h);

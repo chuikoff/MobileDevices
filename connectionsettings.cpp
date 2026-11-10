@@ -19,7 +19,6 @@ WCHAR SettingsName[MAX_PATH];
 WCHAR LastSettingsName[MAX_PATH]={0};
 int LastLocalTime=0;
 
-enum { UI_LANG_EN=0, UI_LANG_RU=1 };
 
 static PluginDeviceInfo g_dlgInfo;
 static BOOL g_dlgInfoOk=FALSE;
@@ -131,6 +130,8 @@ int UseLocalTime(WCHAR* path)
 	return LastLocalTime;
 }
 
+static BOOL g_isDiagnose=FALSE;
+
 static BOOL CALLBACK DeviceInfoDlg(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
 {
 	UNREFERENCED_PARAMETER(lParam);
@@ -139,16 +140,23 @@ static BOOL CALLBACK DeviceInfoDlg(HWND hDlg, UINT message, WPARAM wParam, LPARA
 	case WM_INITDIALOG:
 		{
 			int lang=GetPluginUiLanguage();
-			SetWindowTextW(hDlg, SettingsName[0] ? SettingsName : PLUGIN_DISPLAY_NAME_W);
-			WCHAR text[4096];
+			if (g_isDiagnose) {
+				WCHAR title[MAX_PATH+64];
+				swprintf_s(title, countof(title), lang==UI_LANG_RU ? L"Диагностика: %s" : L"Diagnostics: %s",
+					SettingsName[0] ? SettingsName : PLUGIN_DISPLAY_NAME_W);
+				SetWindowTextW(hDlg, title);
+			} else {
+				SetWindowTextW(hDlg, SettingsName[0] ? SettingsName : PLUGIN_DISPLAY_NAME_W);
+			}
+			WCHAR text[8192];
 			if (g_dlgInfoOk)
-				FormatDeviceInfo(lang, &g_dlgInfo, text, 4096);
+				FormatDeviceInfo(lang, &g_dlgInfo, text, 8192);
 			else
 				wcslcpy(text, lang==UI_LANG_RU
 					? L"Не удалось прочитать сведения об устройстве."
-					: L"Could not read device information.", 4096);
+					: L"Could not read device information.", 8192);
 			SetDlgItemTextW(hDlg, IDC_DEVICE_INFO, text);
-			SetDlgItemTextW(hDlg, IDOK, lang==UI_LANG_RU ? L"ОК" : L"OK");
+			SetDlgItemTextW(hDlg, IDOK, L"OK");
 			SetWindowTheme(hDlg, L"Explorer", NULL);
 		}
 		return TRUE;
@@ -161,7 +169,6 @@ static BOOL CALLBACK DeviceInfoDlg(HWND hDlg, UINT message, WPARAM wParam, LPARA
 	}
 	return FALSE;
 }
-
 static void OpenGitHub(HWND parent)
 {
 	ShellExecuteW(parent, L"open", PLUGIN_GITHUB_URL_W, NULL, NULL, SW_SHOWNORMAL);
@@ -182,7 +189,7 @@ static void ApplyAboutLanguage(HWND hDlg, int lang)
 	swprintf_s(link, L"<a href=\"%s\">%s</a>", PLUGIN_GITHUB_URL_W, PLUGIN_GITHUB_URL_W);
 	SetDlgItemTextW(hDlg, IDC_GITHUB_LINK, link);
 	SetDlgItemTextW(hDlg, IDC_LANG_LABEL, ru ? L"Язык:" : L"Language:");
-	SetDlgItemTextW(hDlg, IDOK, ru ? L"ОК" : L"OK");
+	SetDlgItemTextW(hDlg, IDOK, L"OK");
 }
 
 static BOOL CALLBACK PluginAboutDlg(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
@@ -242,7 +249,7 @@ static BOOL CALLBACK PluginAboutDlg(HWND hDlg, UINT message, WPARAM wParam, LPAR
 	return FALSE;
 }
 
-BOOL ShowDevicePropertiesDialog(HINSTANCE hInstDlg, HWND parent, WCHAR* RemoteName)
+BOOL ShowDevicePropertiesDialogEx(HINSTANCE hInstDlg, HWND parent, WCHAR* RemoteName, BOOL isDiagnose)
 {
 	if (RemoteName && RemoteName[0]=='\\')
 		RemoteName++;
@@ -251,8 +258,14 @@ BOOL ShowDevicePropertiesDialog(HINSTANCE hInstDlg, HWND parent, WCHAR* RemoteNa
 	else
 		SettingsName[0]=0;
 	wcutlastbackslash(SettingsName);
-	g_dlgInfoOk=QueryDeviceInfo(SettingsName, &g_dlgInfo);
+	g_isDiagnose=isDiagnose;
+	g_dlgInfoOk=QueryDeviceInfoEx(SettingsName, &g_dlgInfo, isDiagnose);
 	return DialogBoxW(hInstDlg, MAKEINTRESOURCEW(IDD_DEVICEINFO), parent, (DLGPROC)DeviceInfoDlg)==IDOK;
+}
+
+BOOL ShowDevicePropertiesDialog(HINSTANCE hInstDlg, HWND parent, WCHAR* RemoteName)
+{
+	return ShowDevicePropertiesDialogEx(hInstDlg, parent, RemoteName, FALSE);
 }
 
 BOOL ShowPluginAboutDialog(HINSTANCE hInstDlg, HWND parent)

@@ -348,7 +348,23 @@ static void ScanAndroidVersionProps(IPortableDeviceProperties* props, PluginDevi
 	SAFE_RELEASE(vals);
 }
 
-BOOL QueryDeviceInfo(LPCWSTR remoteName, PluginDeviceInfo* info)
+LPCWSTR DecodeWpdHResult(HRESULT hr, BOOL ru)
+{
+	if (SUCCEEDED(hr))
+		return ru ? L"Ошибок нет (OK)" : L"No error (OK)";
+	if (hr==HRESULT_FROM_WIN32(ERROR_BUSY) || hr==HRESULT_FROM_WIN32(ERROR_SHARING_VIOLATION))
+		return ru ? L"Занято Проводником, «Связью с телефоном» или другой программой"
+		          : L"In use by Explorer, Phone Link, or another program";
+	if (hr==HRESULT_FROM_WIN32(ERROR_ACCESS_DENIED) || hr==E_ACCESSDENIED)
+		return ru ? L"Доступ запрещён (экран заблокирован, режим «Только зарядка» или MTP выключен)"
+		          : L"Access denied (screen locked, charging-only mode, or MTP disabled)";
+	if (hr==HRESULT_FROM_WIN32(ERROR_NOT_READY) || hr==HRESULT_FROM_WIN32(ERROR_NOT_FOUND) || hr==HRESULT_FROM_WIN32(ERROR_DEVICE_NOT_CONNECTED))
+		return ru ? L"Устройство не готово или отключено (разблокируйте экран и выберите «Передача файлов»)"
+		          : L"Device not ready or disconnected (unlock screen and select File transfer)";
+	return ru ? L"Ошибка ввода-вывода или отказ MTP-драйвера"
+	          : L"I/O error or MTP driver failure";
+}
+BOOL QueryDeviceInfoEx(LPCWSTR remoteName, PluginDeviceInfo* info, BOOL activeDiagnose)
 {
 	if (!info)
 		return FALSE;
@@ -356,8 +372,32 @@ BOOL QueryDeviceInfo(LPCWSTR remoteName, PluginDeviceInfo* info)
 	info->battery=-1;
 	info->batteryHealth=-1;
 	info->batteryCycles=-1;
-	if (!remoteName || remoteName[0]==0)
-		return FALSE;
+
+	/* If at root (\ or empty) and no device specified, pick first device if available */
+	if (!remoteName || remoteName[0]==0 || (remoteName[0]=='\\' && remoteName[1]==0)) {
+		if (AppleMdCount()>0) {
+			WCHAR firstApple[MAX_PATH];
+			if (AppleMdGetName(0, firstApple, MAX_PATH))
+				return AppleMdFillInfoEx(firstApple, info, activeDiagnose);
+		}
+		if (StoredNumIds>0 && StoredPnPFriendlyNames && StoredPnPFriendlyNames[0])
+			return QueryDeviceInfoEx(StoredPnPFriendlyNames[0], info, activeDiagnose);
+
+		/* No device connected */
+		info->hasConnectionInfo=TRUE;
+		info->isApple=TRUE;
+		info->isDiagnose=activeDiagnose;
+		AppleMdGetDllInfo(info->mdDllPath, countof(info->mdDllPath), info->mdDllVersion, countof(info->mdDllVersion));
+		info->mdDllLoaded=(info->mdDllPath[0]!=0);
+		info->applePaired=-1;
+		info->appleLockdown=-1;
+		info->appleAfc=-1;
+		info->appleHouseArrest=-1;
+		info->appleLogs=-1;
+		info->appleUnlocked=-1;
+		info->model[0]=0;
+		return TRUE;
+	}
 
 	{
 		WCHAR dev[MAX_PATH];
@@ -367,7 +407,7 @@ BOOL QueryDeviceInfo(LPCWSTR remoteName, PluginDeviceInfo* info)
 		WCHAR* sl=wcschr(dev, '\\');
 		if (sl) sl[0]=0;
 		if (AppleMdIsDeviceName(dev))
-			return AppleMdFillInfo(dev, info);
+			return AppleMdFillInfoEx(dev, info, activeDiagnose);
 	}
 
 	ComApartmentGuard comApt;
@@ -399,7 +439,8 @@ BOOL QueryDeviceInfo(LPCWSTR remoteName, PluginDeviceInfo* info)
 		SAFE_RELEASE(content);
 		SAFE_RELEASE(props);
 		if (rootId) CoTaskMemFree(rootId);
-		return FALSE;
+		WpdFillDeviceInfo(path, info, activeDiagnose);
+		return TRUE;
 	}
 
 	IPortableDeviceKeyCollection* keys=NULL;
@@ -497,9 +538,15 @@ BOOL QueryDeviceInfo(LPCWSTR remoteName, PluginDeviceInfo* info)
 	SAFE_RELEASE(props);
 	SAFE_RELEASE(content);
 	UnlockPlugin();
+
+	WpdFillDeviceInfo(path, info, activeDiagnose);
 	return TRUE;
 }
 
+BOOL QueryDeviceInfo(LPCWSTR remoteName, PluginDeviceInfo* info)
+{
+	return QueryDeviceInfoEx(remoteName, info, FALSE);
+}
 void FormatDeviceInfo(int lang, const PluginDeviceInfo* info, WCHAR* out, int outcch)
 {
 	if (!out || outcch<8)
@@ -633,11 +680,117 @@ void FormatDeviceInfo(int lang, const PluginDeviceInfo* info, WCHAR* out, int ou
 		swprintf_s(line, ru ? L"Приложения: %s\r\n" : L"Apps: %s\r\n", as);
 		wcslcat(out, line, outcch);
 	}
+
+	/* Connection diagnostics */
+	if (info->hasConnectionInfo) {
+		wcslcat(out, ru ? L"\r\n--- Соединение ---\r\n" : L"\r\n--- Connection ---\r\n", outcch);
+		if (info->isApple) {
+			if (info->mdDllLoaded) {
+				if (info->mdDllVersion[0])
+					swprintf_s(line, ru ? L"Библиотека Apple: загружена (версия %s)\r\n" : L"Apple Library: loaded (version %s)\r\n", info->mdDllVersion);
+				else
+					swprintf_s(line, ru ? L"Библиотека Apple: загружена (%s)\r\n" : L"Apple Library: loaded (%s)\r\n", info->mdDllPath);
+			} else {
+				swprintf_s(line, ru ? L"Библиотека Apple: не найдена (установите «Apple Devices» из Microsoft Store)\r\n"
+				                    : L"Apple Library: not found (install Apple Devices from Microsoft Store)\r\n");
+			}
+			wcslcat(out, line, outcch);
+
+			if (info->applePaired==1)
+				wcslcat(out, ru ? L"Доверие: сопряжён (устройство доверено)\r\n" : L"Trust: paired (device trusted)\r\n", outcch);
+			else if (info->applePaired==0)
+				wcslcat(out, ru ? L"Доверие: не сопряжён (нажмите «Доверять» на iPhone)\r\n" : L"Trust: not paired (tap Trust on iPhone)\r\n", outcch);
+			else
+				wcslcat(out, ru ? L"Доверие: н/д\r\n" : L"Trust: n/a\r\n", outcch);
+
+			if (info->appleLockdown==1)
+				wcslcat(out, ru ? L"Сессия lockdown: открыта\r\n" : L"Lockdown session: opened\r\n", outcch);
+			else if (info->appleLockdown==0)
+				wcslcat(out, ru ? L"Сессия lockdown: не открылась\r\n" : L"Lockdown session: failed\r\n", outcch);
+			else
+				wcslcat(out, ru ? L"Сессия lockdown: не проверялась\r\n" : L"Lockdown session: not tested\r\n", outcch);
+
+			if (info->appleUnlocked==1)
+				wcslcat(out, ru ? L"Экран: разблокирован (файловый доступ открыт)\r\n" : L"Screen: unlocked (file access available)\r\n", outcch);
+			else if (info->appleUnlocked==0)
+				wcslcat(out, ru ? L"Экран: доверен, но файловый доступ не открылся, разблокируйте экран\r\n"
+				                : L"Screen: trusted, but file access failed, unlock screen\r\n", outcch);
+			else
+				wcslcat(out, ru ? L"Экран: не проверялся\r\n" : L"Screen: not tested\r\n", outcch);
+
+			const WCHAR* afcStr=(info->appleAfc==1) ? (ru ? L"живо" : L"alive") :
+			                    (info->appleAfc==0) ? (ru ? L"ошибка" : L"failed") :
+			                    (ru ? L"не пробовали" : L"not tried");
+			swprintf_s(line, ru ? L"Файлы (AFC): %s\r\n" : L"Files (AFC): %s\r\n", afcStr);
+			wcslcat(out, line, outcch);
+
+			const WCHAR* haStr=(info->appleHouseArrest==1) ? (ru ? L"живо" : L"alive") :
+			                   (info->appleHouseArrest==0) ? (ru ? L"ошибка" : L"failed") :
+			                   (ru ? L"не пробовали" : L"not tried");
+			swprintf_s(line, ru ? L"Документы приложений: %s\r\n" : L"App documents: %s\r\n", haStr);
+			wcslcat(out, line, outcch);
+
+			const WCHAR* logsStr=(info->appleLogs==1) ? (ru ? L"живо" : L"alive") :
+			                     (info->appleLogs==2) ? (ru ? L"идёт фоновое чтение…" : L"background reading…") :
+			                     (info->appleLogs==3) ? (ru ? L"недавно не получилось, пауза" : L"recent failure, cooldown") :
+			                     (info->appleLogs==0) ? (ru ? L"ошибка" : L"failed") :
+			                     (ru ? L"не пробовали" : L"not tried");
+			swprintf_s(line, ru ? L"Журналы (Logs): %s\r\n" : L"Logs: %s\r\n", logsStr);
+			wcslcat(out, line, outcch);
+		} else {
+			if (info->androidAccessMode==1)
+				wcslcat(out, ru ? L"Доступ: чтение и запись (RW)\r\n" : L"Access: read-write (RW)\r\n", outcch);
+			else if (info->androidAccessMode==2)
+				wcslcat(out, ru ? L"Доступ: только чтение (RO, откат с записи)\r\n" : L"Access: read-only (RO, fallback)\r\n", outcch);
+			else if (info->androidAccessMode==0)
+				wcslcat(out, ru ? L"Доступ: не открылся\r\n" : L"Access: failed to open\r\n", outcch);
+			else
+				wcslcat(out, ru ? L"Доступ: н/д\r\n" : L"Access: n/a\r\n", outcch);
+
+			swprintf_s(line, ru ? L"Режим USB: %s\r\n" : L"USB mode: %s\r\n",
+				info->androidUsbMode[0] ? info->androidUsbMode : na);
+			wcslcat(out, line, outcch);
+
+			if (FAILED(info->androidOpenHr)) {
+				swprintf_s(line, ru ? L"Причина отказа WPD: %s (0x%08X)\r\n" : L"WPD failure reason: %s (0x%08X)\r\n",
+					DecodeWpdHResult(info->androidOpenHr, ru), (DWORD)info->androidOpenHr);
+				wcslcat(out, line, outcch);
+			}
+		}
+
+		if (info->lastErrorOp[0] || info->lastErrorMsg[0]) {
+			wcslcat(out, ru ? L"\r\n--- Последняя ошибка ---\r\n" : L"\r\n--- Last error ---\r\n", outcch);
+			if (info->lastErrorTime[0]) {
+				swprintf_s(line, ru ? L"Время: %s\r\n" : L"Time: %s\r\n", info->lastErrorTime);
+				wcslcat(out, line, outcch);
+			}
+			if (info->lastErrorOp[0]) {
+				swprintf_s(line, ru ? L"Операция: %s\r\n" : L"Operation: %s\r\n", info->lastErrorOp);
+				wcslcat(out, line, outcch);
+			}
+			if (info->lastErrorCode!=0) {
+				swprintf_s(line, ru ? L"Код ошибки: 0x%08X (%u)\r\n" : L"Error code: 0x%08X (%u)\r\n",
+					info->lastErrorCode, info->lastErrorCode);
+				wcslcat(out, line, outcch);
+			}
+			if (info->lastErrorMsg[0]) {
+				swprintf_s(line, ru ? L"Причина: %s\r\n" : L"Reason: %s\r\n", info->lastErrorMsg);
+				wcslcat(out, line, outcch);
+			}
+		}
+	}
 }
 
 void ShowDeviceInfoBox(HWND parent, LPCWSTR remoteName)
 {
 	WCHAR buf[wdirtypemax];
 	wcslcpy(buf, remoteName ? remoteName : L"\\", wdirtypemax-1);
-	ShowDevicePropertiesDialog(hInst, parent, buf);
+	ShowDevicePropertiesDialogEx(hInst, parent, buf, FALSE);
+}
+
+void ShowDeviceDiagnoseBox(HWND parent, LPCWSTR remoteName)
+{
+	WCHAR buf[wdirtypemax];
+	wcslcpy(buf, remoteName ? remoteName : L"\\", wdirtypemax-1);
+	ShowDevicePropertiesDialogEx(hInst, parent, buf, TRUE);
 }

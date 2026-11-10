@@ -70,7 +70,13 @@ void EnsureWpdEventsAdvised(void);
 BOOL ShouldHideWpdDevice(IPortableDeviceManager* mgr, LPCWSTR pnpId, LPCWSTR friendly);
 BOOL EjectWpdDevice(LPCWSTR pnpId);
 void ShowDeviceInfoBox(HWND parent, LPCWSTR remoteName);
+void ShowDeviceDiagnoseBox(HWND parent, LPCWSTR remoteName);
+BOOL ShowDevicePropertiesDialog(HINSTANCE hInstDlg, HWND parent, WCHAR* RemoteName);
+BOOL ShowDevicePropertiesDialogEx(HINSTANCE hInstDlg, HWND parent, WCHAR* RemoteName, BOOL isDiagnose);
 PWSTR FindPnpIdByPath(LPCWSTR path);
+enum { UI_LANG_EN=0, UI_LANG_RU=1 };
+extern DWORD StoredNumIds;
+extern PWSTR* StoredPnPFriendlyNames;
 
 #define DEVICE_INFO_MAX_STOR 8
 typedef struct {
@@ -102,8 +108,38 @@ typedef struct {
 	ULONGLONG systemAvailable;
 	ULONGLONG photoUsage;
 	ULONGLONG appUsage;
+
+	/* Connection & Diagnostics */
+	BOOL hasConnectionInfo;
+	BOOL isApple;
+	BOOL isDiagnose;
+
+	/* Apple details */
+	BOOL mdDllLoaded;
+	WCHAR mdDllPath[MAX_PATH];
+	WCHAR mdDllVersion[64];
+	int applePaired;       /* 1=paired, 0=not paired/need trust, -1=unknown */
+	int appleLockdown;     /* 1=open, 0=failed, -1=unknown */
+	int appleAfc;          /* 1=alive, 0=failed, -1=not tried */
+	int appleHouseArrest;  /* 1=alive, 0=failed, -1=not tried */
+	int appleLogs;         /* 1=alive, 0=failed, -1=not tried, 2=reading in background, 3=cooldown/pause */
+	int appleUnlocked;     /* 1=unlocked, 0=locked (fact: lockdown ok, AFC failed), -1=unknown */
+
+	/* Android details */
+	int androidAccessMode; /* 1=RW, 2=RO, 0=open failed, -1=unknown */
+	HRESULT androidOpenHr;
+	WCHAR androidUsbMode[96];
+
+	/* Last error */
+	WCHAR lastErrorOp[128];
+	WCHAR lastErrorTime[16];
+	DWORD lastErrorCode;
+	WCHAR lastErrorMsg[256];
 } PluginDeviceInfo;
 
 BOOL QueryDeviceInfo(LPCWSTR remoteName, PluginDeviceInfo* info);
+BOOL QueryDeviceInfoEx(LPCWSTR remoteName, PluginDeviceInfo* info, BOOL activeDiagnose);
 void FormatDeviceInfo(int lang, const PluginDeviceInfo* info, WCHAR* out, int outcch);
+LPCWSTR DecodeWpdHResult(HRESULT hr, BOOL ru);
+BOOL WpdFillDeviceInfo(LPCWSTR remoteName, PluginDeviceInfo* info, BOOL activeDiagnose);
 extern volatile LONG g_cacheDirty;

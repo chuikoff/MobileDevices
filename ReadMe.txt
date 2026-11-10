@@ -1,4 +1,4 @@
-Mobile Devices plugin v0.9.74
+Mobile Devices plugin v0.9.86
 =======================
 Modified from Windows Media Audio 2 (wpdplug) by Christian Ghisler.
 
@@ -44,7 +44,7 @@ Installation: open this archive in Total Commander.
 5. Фото iPhone по альбомам (Все фото, Избранное, Селфи, Снимки
    экрана, свои альбомы), с датой съёмки и эскизами.
    Первое открытие читает библиотеку Photos и запоминает её.
-   Удаление убирает снимок из списка. Если библиотека недоступна —
+   Удаление навсегда стирает снимок с устройства (минуя «Недавно удалённые»). Если библиотека недоступна —
    список без папок 100APPLE и .THMB.
 6. Applications — только приложения с File Sharing / Файлы.
 7. Копирование и удаление файлов документов этих приложений.
@@ -90,5 +90,7 @@ Features
     from the Microsoft Store.
 
 Alt+Enter on the plugin shows version, GitHub and language (English / Russian).
-Alt+Enter on a device shows only device information.
+Alt+Enter on a device shows device info and live connection diagnostics.
+quote diagnose (or quote diag) runs active connection diagnostics (probes AFC, apps, logs, WPD).
+quote info displays passive in-memory connection and device status.
 Unicode plugin (FsInitW). Requires Total Commander 7.50 or later.

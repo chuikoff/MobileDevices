@@ -146,6 +146,28 @@ IPortableDevice** StoredDevices=NULL;
 LPWSTR* StoredEventCookies=NULL;
 static LONG* StoredDeviceBusy=NULL;
 DWORD StoredNumIds=0;
+
+struct WpdDeviceDiag {
+	int accessMode;         /* 1=RW, 2=RO, 0=failed, -1=unknown */
+	HRESULT lastOpenHr;
+	WCHAR lastErrorOp[128];
+	WCHAR lastErrorTime[16];
+	DWORD lastErrorCode;
+	WCHAR lastErrorMsg[256];
+};
+static WpdDeviceDiag* StoredDeviceDiag=NULL;
+
+void SetWpdLastError(DWORD idx, LPCWSTR op, DWORD code, LPCWSTR msg)
+{
+	if (!StoredDeviceDiag || idx>=StoredNumIds)
+		return;
+	SYSTEMTIME st;
+	GetLocalTime(&st);
+	swprintf_s(StoredDeviceDiag[idx].lastErrorTime, countof(StoredDeviceDiag[idx].lastErrorTime), L"%02d:%02d", st.wHour, st.wMinute);
+	wcslcpy(StoredDeviceDiag[idx].lastErrorOp, op ? op : L"", countof(StoredDeviceDiag[idx].lastErrorOp));
+	StoredDeviceDiag[idx].lastErrorCode=code;
+	wcslcpy(StoredDeviceDiag[idx].lastErrorMsg, msg ? msg : L"", countof(StoredDeviceDiag[idx].lastErrorMsg));
+}
 static __declspec(thread) int t_pluginLockHeld=0;
 
 PWSTR FindPnpIdByPath(LPCWSTR path)
@@ -473,7 +495,7 @@ static HRESULT CreateWpdClientInfo(IPortableDeviceValues** ppClientInfo, DWORD d
 	return S_OK;
 }
 
-static HRESULT OpenWpdDevice(LPCWSTR deviceId, IPortableDevice** ppDevice)
+static HRESULT OpenWpdDevice(LPCWSTR deviceId, IPortableDevice** ppDevice, DWORD devIndex=(DWORD)-1)
 {
 	if (!ppDevice)
 		return E_POINTER;
@@ -491,22 +513,40 @@ static HRESULT OpenWpdDevice(LPCWSTR deviceId, IPortableDevice** ppDevice)
 	if (SUCCEEDED(hr))
 		hr=dev->Open(deviceId, client);
 
-	if (FAILED(hr)) {
+	if (SUCCEEDED(hr)) {
+		if (StoredDeviceDiag && devIndex<StoredNumIds) {
+			StoredDeviceDiag[devIndex].accessMode=1;
+			StoredDeviceDiag[devIndex].lastOpenHr=S_OK;
+		}
+	} else {
 		LogWpdError(L"Open(read-write)", hr);
 		SAFE_RELEASE(dev);
 		client->SetUnsignedIntegerValue(WPD_CLIENT_DESIRED_ACCESS, GENERIC_READ);
 		HRESULT hr2=CoCreateInstance(CLSID_PortableDevice, NULL, CLSCTX_INPROC_SERVER, IID_IPortableDevice, (VOID**)&dev);
 		if (SUCCEEDED(hr2)) {
 			hr2=dev->Open(deviceId, client);
-			if (SUCCEEDED(hr2))
+			if (SUCCEEDED(hr2)) {
 				hr=hr2;
-			else {
+				if (StoredDeviceDiag && devIndex<StoredNumIds) {
+					StoredDeviceDiag[devIndex].accessMode=2;
+					StoredDeviceDiag[devIndex].lastOpenHr=hr2;
+				}
+			} else {
 				LogWpdError(L"Open(read-only)", hr2);
 				SAFE_RELEASE(dev);
 				hr=hr2;
+				if (StoredDeviceDiag && devIndex<StoredNumIds) {
+					StoredDeviceDiag[devIndex].accessMode=0;
+					StoredDeviceDiag[devIndex].lastOpenHr=hr2;
+				}
 			}
-		} else
+		} else {
 			hr=hr2;
+			if (StoredDeviceDiag && devIndex<StoredNumIds) {
+				StoredDeviceDiag[devIndex].accessMode=0;
+				StoredDeviceDiag[devIndex].lastOpenHr=hr2;
+			}
+		}
 	}
 	SAFE_RELEASE(client);
 	*ppDevice=dev;
@@ -1185,7 +1225,7 @@ HRESULT GetFolderIDFromPathName(LPWSTR pPath,IEnumPortableDeviceObjectIDs** pEnu
 		return E_FAIL;
 	}
 	if (pDevice==NULL) {
-		hr = OpenWpdDevice(DeviceID, &pDevice);
+		hr = OpenWpdDevice(DeviceID, &pDevice, DeviceIndex);
 		if (SUCCEEDED(hr))
 			StoredDevices[DeviceIndex]=pDevice;
 		else
@@ -1674,7 +1714,7 @@ static void RefineNamesFromWpdModel(void)
 	for (DWORD i=0;i<StoredNumIds;i++) {
 		IPortableDevice* dev=StoredDevices[i];
 		if (!dev) {
-			if (FAILED(OpenWpdDevice(StoredPnpDeviceIDs[i], &dev)) || !dev)
+			if (FAILED(OpenWpdDevice(StoredPnpDeviceIDs[i], &dev, i)) || !dev)
 				continue;
 			StoredDevices[i]=dev;
 		}
@@ -1715,7 +1755,8 @@ BOOL LoadAllDevices()
 		StoredDevices = (IPortableDevice**)malloc(sz);
 		StoredEventCookies = (LPWSTR*)malloc(StoredNumIds*sizeof(LPWSTR));
 		StoredDeviceBusy = (LONG*)malloc(StoredNumIds*sizeof(LONG));
-		if (!StoredPnpDeviceIDs || !StoredPnPFriendlyNames || !StoredDevices || !StoredEventCookies || !StoredDeviceBusy) {
+		StoredDeviceDiag = (WpdDeviceDiag*)calloc(StoredNumIds, sizeof(WpdDeviceDiag));
+		if (!StoredPnpDeviceIDs || !StoredPnPFriendlyNames || !StoredDevices || !StoredEventCookies || !StoredDeviceBusy || !StoredDeviceDiag) {
 			FreeDeviceList();
 			return false;
 		}
@@ -1724,6 +1765,8 @@ BOOL LoadAllDevices()
 		memset(StoredDevices,0,sz);
 		memset(StoredEventCookies,0,StoredNumIds*sizeof(LPWSTR));
 		memset(StoredDeviceBusy,0,StoredNumIds*sizeof(LONG));
+		for (DWORD i=0;i<StoredNumIds;i++)
+			StoredDeviceDiag[i].accessMode=-1;
 		hr = pDevMgr->GetDevices(StoredPnpDeviceIDs, &StoredNumIds);
 		if (FAILED(hr)) {
 			LogWpdError(L"GetDevices(list)", hr);
@@ -1759,6 +1802,8 @@ BOOL LoadAllDevices()
 				StoredPnPFriendlyNames[keep]=StoredPnPFriendlyNames[i];
 				StoredDevices[keep]=StoredDevices[i];
 				StoredEventCookies[keep]=StoredEventCookies[i];
+				if (StoredDeviceDiag)
+					StoredDeviceDiag[keep]=StoredDeviceDiag[i];
 				StoredPnpDeviceIDs[i]=NULL;
 				StoredPnPFriendlyNames[i]=NULL;
 				StoredDevices[i]=NULL;
@@ -2474,6 +2519,9 @@ void FreeDeviceList()
 		free(StoredEventCookies);
 	if (StoredDeviceBusy)
 		free(StoredDeviceBusy);
+	if (StoredDeviceDiag)
+		free(StoredDeviceDiag);
+	StoredDeviceDiag=NULL;
 	StoredPnpDeviceIDs=NULL;
 	StoredPnPFriendlyNames=NULL;
 	StoredDevices=NULL;
@@ -2725,8 +2773,8 @@ static int CopyMoveViaLocalTemp(WCHAR* OldName, WCHAR* NewName, BOOL Move, BOOL 
 	int putFlags=OverWrite ? FS_COPYFLAGS_OVERWRITE : 0;
 	r=FsPutFileW(tmpFile, NewName, putFlags);
 	DeleteFileT(tmpFile);
-	if (r==FS_FILE_OK && Move)
-		FsDeleteFileW(OldName);
+	if (r==FS_FILE_OK && Move && !FsDeleteFileW(OldName))
+		r=FS_FILE_WRITEERROR;
 	return r;
 }
 
@@ -2761,14 +2809,14 @@ static void WpdTrace(const char* line)
 static DWORD WINAPI DeleteCancelThread(LPVOID arg)
 {
 	DeleteCancelWatch* w=(DeleteCancelWatch*)arg;
+	if (!w)
+		return 0;
 	DWORD start=GetTickCount();
 	HRESULT com=CoInitializeEx(NULL, COINIT_MULTITHREADED);
 	for (;;) {
 		if (WaitForSingleObject(w->done, 200)==WAIT_OBJECT_0)
 			break;
-		// A cold Android MTP stack can spend one or two minutes on the first
-		// delete. Cancel only a real hang, or an explicit abort.
-		if (IsAbortRequested() || GetTickCount()-start>=180000) {
+		if (IsAbortRequested() || GetTickCount()-start>=20000) {
 			WpdTrace("wpd delete cancel");
 			if (w->dev)
 				w->dev->Cancel();
@@ -2777,6 +2825,11 @@ static DWORD WINAPI DeleteCancelThread(LPVOID arg)
 	}
 	if (SUCCEEDED(com))
 		CoUninitialize();
+	if (w->dev)
+		w->dev->Release();
+	if (w->done)
+		CloseHandle(w->done);
+	free(w);
 	return 0;
 }
 
@@ -2870,6 +2923,26 @@ static HRESULT WpdDeleteObject(IPortableDeviceContent* content, LPCWSTR objectId
 	return FAILED(hr) ? hr : E_FAIL;
 }
 
+static IPortableDevice* EnsureStoredDeviceByPath(LPCWSTR path)
+{
+	LockPlugin();
+	IPortableDevice* dev=FindStoredDeviceByPath(path);
+	if (dev) {
+		dev->AddRef();
+		UnlockPlugin();
+		return dev;
+	}
+	DWORD idx=FindStoredDeviceIndexByPath(path);
+	if (idx!=(DWORD)-1 && StoredPnpDeviceIDs && StoredPnpDeviceIDs[idx]) {
+		if (SUCCEEDED(OpenWpdDevice(StoredPnpDeviceIDs[idx], &dev, idx)) && dev) {
+			StoredDevices[idx]=dev;
+			dev->AddRef();
+		}
+	}
+	UnlockPlugin();
+	return dev;
+}
+
 BOOL __stdcall FsDeleteFileW(WCHAR* RemoteName)
 {
 	if (!RemoteName || RemoteName[0]!='\\')
@@ -2899,18 +2972,25 @@ BOOL __stdcall FsDeleteFileW(WCHAR* RemoteName)
 			return AppleMdDelete(dev, rel);
 	}
 
-	IPortableDevice* dev=NULL;
-	LockPlugin();
-	dev=FindStoredDeviceByPath(RemoteName);
-	if (dev)
-		dev->AddRef();
-	UnlockPlugin();
-	DeleteCancelWatch watch;
-	watch.dev=dev;
-	watch.done=CreateEventW(NULL, TRUE, FALSE, NULL);
+	IPortableDevice* dev=EnsureStoredDeviceByPath(RemoteName);
+	HANDLE done=CreateEventW(NULL, TRUE, FALSE, NULL);
 	HANDLE th=NULL;
-	if (dev && watch.done)
-		th=CreateThread(NULL, 0, DeleteCancelThread, &watch, 0, NULL);
+	if (dev && done) {
+		DeleteCancelWatch* w=(DeleteCancelWatch*)calloc(1, sizeof(DeleteCancelWatch));
+		if (w) {
+			w->dev=dev;
+			dev->AddRef();
+			DuplicateHandle(GetCurrentProcess(), done, GetCurrentProcess(),
+				&w->done, 0, FALSE, DUPLICATE_SAME_ACCESS);
+			th=CreateThread(NULL, 0, DeleteCancelThread, w, 0, NULL);
+			if (!th) {
+				dev->Release();
+				if (w->done)
+					CloseHandle(w->done);
+				free(w);
+			}
+		}
+	}
 	TransferScope xfer(dev);
 
 	LockPlugin();
@@ -2941,27 +3021,35 @@ BOOL __stdcall FsDeleteFileW(WCHAR* RemoteName)
 			CoTaskMemFree(pStorageID);
 			pStorageID=NULL;
 		}
+		UnlockPlugin();
 		if (kind!=0 && pItemStorageID && pDeviceContent) {
 			hr=WpdDeleteObject(pDeviceContent, pItemStorageID);
 			if (hr==S_OK) {
+				LockPlugin();
 				RemoveFullPathFromCache(RemoteName);
+				UnlockPlugin();
 				result=true;
+			} else {
+				DWORD didx=FindStoredDeviceIndexByPath(RemoteName);
+				BOOL ru=(GetPluginUiLanguage()==1);
+				SetWpdLastError(didx, ru ? L"Удаление" : L"Delete", hr, DecodeWpdHResult(hr, ru));
 			}
 		} else
 			WpdTrace("wpd delete not found");
 		if (pItemStorageID)
 			CoTaskMemFree(pItemStorageID);
 		SAFE_RELEASE(pDeviceContent);
+	} else {
+		UnlockPlugin();
 	}
-	UnlockPlugin();
-	if (watch.done)
-		SetEvent(watch.done);
-	if (th) {
-		WaitForSingleObject(th, 3000);
-		CloseHandle(th);
+	if (done) {
+		SetEvent(done);
+		if (th) {
+			WaitForSingleObject(th, 3000);
+			CloseHandle(th);
+		}
+		CloseHandle(done);
 	}
-	if (watch.done)
-		CloseHandle(watch.done);
 	if (dev)
 		dev->Release();
 	return result;
@@ -3175,8 +3263,8 @@ int __stdcall FsRenMovFileW(WCHAR* OldName,WCHAR* NewName,BOOL Move,BOOL OverWri
 								result=FS_FILE_WRITEERROR;
 							}
 						}
-						if (result==FS_FILE_OK && didCopy && Move)
-							FsDeleteFileW(OldName);
+						if (result==FS_FILE_OK && didCopy && Move && !FsDeleteFileW(OldName))
+							result=FS_FILE_WRITEERROR;
 						if (result==FS_FILE_OK) {
 							RemoveFullPathFromCache(OldName);
 							RemoveFullPathFromCache(NewName);
@@ -3554,6 +3642,8 @@ int __stdcall FsPutFileW(WCHAR* LocalName,WCHAR* RemoteName,int CopyFlags)
 	
 	if (RemoteName[0]!='\\')
 		return FS_FILE_NOTFOUND;
+	if (Resume)
+		return FS_FILE_NOTSUPPORTED;
 
 	err=ProgressProcT(PluginNumber,LocalName,RemoteName,0);
 	if (err)
@@ -3611,17 +3701,20 @@ int __stdcall FsPutFileW(WCHAR* LocalName,WCHAR* RemoteName,int CopyFlags)
 			else if (i==1 && !OverWrite)
 					result=FS_FILE_EXISTS;
 			else {
-				if (i==1)
-					hr=WpdDeleteObject(pDeviceContent, pItemStorageID);
-				else
-					hr=S_OK;
-				if (SUCCEEDED(hr)) {
-					IPortableDeviceValues* pValues;
-					hr = CoCreateInstance(CLSID_PortableDeviceValues,NULL,
-						CLSCTX_INPROC_SERVER,IID_IPortableDeviceValues,(VOID**) &pValues);
+				HANDLE f=CreateFileT(LocalName,GENERIC_READ,FILE_SHARE_READ | FILE_SHARE_WRITE,NULL,OPEN_EXISTING,0,NULL);
+				if (f==INVALID_HANDLE_VALUE) {
+					result=FS_FILE_READERROR;
+				} else {
+					/* shortcut: MTP protocol lacks in-place overwrite or atomic rename, deleting old object before create is required */
+					if (i==1)
+						hr=WpdDeleteObject(pDeviceContent, pItemStorageID);
+					else
+						hr=S_OK;
 					if (SUCCEEDED(hr)) {
-						HANDLE f=CreateFileT(LocalName,GENERIC_READ,FILE_SHARE_READ | FILE_SHARE_WRITE,NULL,OPEN_EXISTING,0,NULL);
-						if (f!=INVALID_HANDLE_VALUE) {
+						IPortableDeviceValues* pValues;
+						hr = CoCreateInstance(CLSID_PortableDeviceValues,NULL,
+							CLSCTX_INPROC_SERVER,IID_IPortableDeviceValues,(VOID**) &pValues);
+						if (SUCCEEDED(hr)) {
 							DWORD SizeHigh=0;
 							DWORD SizeLow=GetFileSize(f,&SizeHigh);
 							totalsize=MakeU64(SizeLow, SizeHigh);
@@ -3716,10 +3809,10 @@ int __stdcall FsPutFileW(WCHAR* LocalName,WCHAR* RemoteName,int CopyFlags)
 								if (OptimalBufferSize<1024)
 									OptimalBufferSize=1024;
 								char* buf=(char*)malloc(OptimalBufferSize);
+								DWORD xferDev=FindStoredDeviceIndexByPath(RemoteName);
 								if (!buf) {
 									result=FS_FILE_READERROR;
 								} else {
-									DWORD xferDev=FindStoredDeviceIndexByPath(RemoteName);
 									TransferBegin(xferDev);
 									UnlockPlugin();
 									DWORD BytesRead,BytesWritten;
@@ -3769,8 +3862,12 @@ int __stdcall FsPutFileW(WCHAR* LocalName,WCHAR* RemoteName,int CopyFlags)
 									LockPlugin();
 									TransferEnd(xferDev);
 								}
-								if (result==FS_FILE_OK)
-									pStream->Commit(STGC_DEFAULT);
+								if (result==FS_FILE_OK && !SUCCEEDED(pStream->Commit(STGC_DEFAULT)))
+									result=FS_FILE_WRITEERROR;
+								if (result!=FS_FILE_OK && result!=FS_FILE_USERABORT) {
+									BOOL ru=(GetPluginUiLanguage()==1);
+									SetWpdLastError(xferDev, ru ? L"Загрузка файла" : L"Upload", (DWORD)hr, DecodeWpdHResult(hr, ru));
+								}
 								IPortableDeviceDataStream* pResultingStream=NULL;
 								IPortableDeviceValues* spResInfo=NULL;
 								LPWSTR NewId=NULL;
@@ -3982,9 +4079,11 @@ int __stdcall FsPutFileW(WCHAR* LocalName,WCHAR* RemoteName,int CopyFlags)
 							if (pPreviewImage)
 								FreeAlbumArt(pPreviewImage);
 							pPreviewImage=NULL;
-						}
+						} else
+							CloseHandle(f);
 						SAFE_RELEASE(pValues);
-					}
+					} else
+						CloseHandle(f);
 				}
 			}
 			if (pItemStorageID)
@@ -4002,6 +4101,58 @@ int __stdcall FsPutFileW(WCHAR* LocalName,WCHAR* RemoteName,int CopyFlags)
 	return result;
 }
 
+
+BOOL WpdFillDeviceInfo(LPCWSTR remoteName, PluginDeviceInfo* info, BOOL activeDiagnose)
+{
+	if (!info)
+		return FALSE;
+	info->hasConnectionInfo=TRUE;
+	info->isApple=FALSE;
+	info->isDiagnose=activeDiagnose;
+	info->androidAccessMode=-1;
+	info->androidOpenHr=S_OK;
+
+	DWORD idx=FindStoredDeviceIndexByPath(remoteName);
+	if (activeDiagnose && idx!=(DWORD)-1 && StoredPnpDeviceIDs && StoredPnpDeviceIDs[idx]) {
+		IPortableDevice* dev=NULL;
+		HRESULT hr=OpenWpdDevice(StoredPnpDeviceIDs[idx], &dev, idx);
+		if (SUCCEEDED(hr) && dev) {
+			if (StoredDevices && StoredDevices[idx])
+				StoredDevices[idx]->Release();
+			if (StoredDevices)
+				StoredDevices[idx]=dev;
+		}
+	}
+
+	if (idx!=(DWORD)-1 && StoredDeviceDiag) {
+		info->androidAccessMode=StoredDeviceDiag[idx].accessMode;
+		info->androidOpenHr=StoredDeviceDiag[idx].lastOpenHr;
+		wcslcpy(info->lastErrorOp, StoredDeviceDiag[idx].lastErrorOp, countof(info->lastErrorOp));
+		wcslcpy(info->lastErrorTime, StoredDeviceDiag[idx].lastErrorTime, countof(info->lastErrorTime));
+		info->lastErrorCode=StoredDeviceDiag[idx].lastErrorCode;
+		wcslcpy(info->lastErrorMsg, StoredDeviceDiag[idx].lastErrorMsg, countof(info->lastErrorMsg));
+	}
+
+	int lang=GetPluginUiLanguage();
+	BOOL ru=(lang==1);
+	if (info->androidAccessMode==1) {
+		wcslcpy(info->androidUsbMode, ru ? L"MTP (чтение/запись)" : L"MTP (read/write)", countof(info->androidUsbMode));
+	} else if (info->androidAccessMode==2) {
+		wcslcpy(info->androidUsbMode, ru ? L"MTP (только чтение)" : L"MTP (read-only)", countof(info->androidUsbMode));
+	} else if (info->androidAccessMode==0) {
+		if (info->androidOpenHr==E_ACCESSDENIED || info->androidOpenHr==HRESULT_FROM_WIN32(ERROR_ACCESS_DENIED))
+			wcslcpy(info->androidUsbMode, ru ? L"открытие не удалось (похоже на «Только зарядка» или блокировку экрана)"
+			                                 : L"open failed (likely Charging only or screen locked)", countof(info->androidUsbMode));
+		else if (info->androidOpenHr==HRESULT_FROM_WIN32(ERROR_BUSY) || info->androidOpenHr==HRESULT_FROM_WIN32(ERROR_SHARING_VIOLATION))
+			wcslcpy(info->androidUsbMode, ru ? L"открытие не удалось (занято другим приложением)"
+			                                 : L"open failed (in use by another application)", countof(info->androidUsbMode));
+		else
+			wcslcpy(info->androidUsbMode, ru ? L"открытие не удалось" : L"open failed", countof(info->androidUsbMode));
+	} else {
+		wcslcpy(info->androidUsbMode, ru ? L"н/д" : L"n/a", countof(info->androidUsbMode));
+	}
+	return TRUE;
+}
 int __stdcall FsExecuteFileW(HWND MainWin,WCHAR* RemoteName,WCHAR* Verb)
 {
 	if (RemoteName[0]!='\\')
@@ -4056,10 +4207,14 @@ int __stdcall FsExecuteFileW(HWND MainWin,WCHAR* RemoteName,WCHAR* Verb)
 			ShowDeviceInfoBox(MainWin, RemoteName);
 			return FS_EXEC_OK;
 		}
+		if (_wcsicmp(cmd,L"diagnose")==0) {
+			ShowDeviceDiagnoseBox(MainWin, RemoteName);
+			return FS_EXEC_OK;
+		}
 		MessageBoxW(MainWin,
 			GetPluginUiLanguage()==1
-				? L"Команды: quote refresh | quote eject | quote info | quote reconnect"
-				: L"Supported: quote refresh | quote eject | quote info | quote reconnect",
+				? L"Команды: quote refresh | quote eject | quote info | quote diagnose | quote reconnect"
+				: L"Supported: quote refresh | quote eject | quote info | quote diagnose | quote reconnect",
 			PLUGIN_DISPLAY_NAME_W,MB_ICONINFORMATION);
 		return FS_EXEC_OK;
 	} else if (_wcsnicmp(Verb,L"chmod ",6)==0) {
