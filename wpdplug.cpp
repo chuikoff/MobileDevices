@@ -3705,6 +3705,19 @@ int __stdcall FsPutFileW(WCHAR* LocalName,WCHAR* RemoteName,int CopyFlags)
 		if (SUCCEEDED(hr)) {
 			// Make sure that there isn't already a file with that name!
 			int i=NameExistsInEnum(pEnumObjectIDs,p,pProperties,&pItemStorageID);
+			WCHAR partName[wdirtypemax];
+			partName[0]=0;
+			if (i==1 && OverWrite) {
+				swprintf_s(partName, countof(partName), L"%s.part", p);
+				LPWSTR pPartStorageID=NULL;
+				if (pEnumObjectIDs) {
+					pEnumObjectIDs->Reset();
+					if (NameExistsInEnum(pEnumObjectIDs, partName, pProperties, &pPartStorageID) && pPartStorageID) {
+						WpdDeleteObject(pDeviceContent, pPartStorageID);
+						CoTaskMemFree(pPartStorageID);
+					}
+				}
+			}
 			SAFE_RELEASE(pEnumObjectIDs);
 			SAFE_RELEASE(pProperties);
 			if (i==2)  // a folder?
@@ -3716,11 +3729,9 @@ int __stdcall FsPutFileW(WCHAR* LocalName,WCHAR* RemoteName,int CopyFlags)
 				if (f==INVALID_HANDLE_VALUE) {
 					result=FS_FILE_READERROR;
 				} else {
-					/* shortcut: MTP protocol lacks in-place overwrite or atomic rename, deleting old object before create is required */
-					if (i==1)
-						hr=WpdDeleteObject(pDeviceContent, pItemStorageID);
-					else
-						hr=S_OK;
+					BOOL isOverwrite=(i==1 && partName[0]!=0);
+					LPCWSTR uploadName=isOverwrite ? partName : p;
+					hr=S_OK;
 					if (SUCCEEDED(hr)) {
 						IPortableDeviceValues* pValues;
 						hr = CoCreateInstance(CLSID_PortableDeviceValues,NULL,
@@ -3739,7 +3750,7 @@ int __stdcall FsPutFileW(WCHAR* LocalName,WCHAR* RemoteName,int CopyFlags)
 							if (pContent)
 								pValues->SetGuidValue(WPD_OBJECT_CONTENT_TYPE,*pContent);
 							pValues->SetStringValue(WPD_OBJECT_PARENT_ID,pStorageID);
-							pValues->SetStringValue(WPD_OBJECT_ORIGINAL_FILE_NAME,p);
+							pValues->SetStringValue(WPD_OBJECT_ORIGINAL_FILE_NAME,uploadName);
 							// pValues->SetStringValue(WPD_OBJECT_NAME,p);   // set it to title instead for music!
 							// set size
 							PROPVARIANT pv1 = {0};
@@ -3777,7 +3788,7 @@ int __stdcall FsPutFileW(WCHAR* LocalName,WCHAR* RemoteName,int CopyFlags)
 							
 							hr = GetFileMetadata(WLocalName, pValues,pContent,&pPreviewImage);
 							if (!SUCCEEDED(hr)) {
-								pValues->SetStringValue(WPD_OBJECT_NAME,p);
+								pValues->SetStringValue(WPD_OBJECT_NAME,uploadName);
 								if (pFormat!=&WPD_OBJECT_FORMAT_UNSPECIFIED) {
 									WCHAR *p1,*p2,*p3;
 									WCHAR *pTitle=NULL;
@@ -3880,8 +3891,20 @@ int __stdcall FsPutFileW(WCHAR* LocalName,WCHAR* RemoteName,int CopyFlags)
 									SetWpdLastError(xferDev, ru ? L"Загрузка файла" : L"Upload", (DWORD)hr, DecodeWpdHResult(hr, ru));
 								}
 								IPortableDeviceDataStream* pResultingStream=NULL;
-								IPortableDeviceValues* spResInfo=NULL;
 								LPWSTR NewId=NULL;
+								if (pStream && SUCCEEDED(pStream->QueryInterface(IID_IPortableDeviceDataStream,(void**)&pResultingStream)) && pResultingStream) {
+									pResultingStream->GetObjectID(&NewId);
+									SAFE_RELEASE(pResultingStream);
+								}
+								if (result!=FS_FILE_OK) {
+									SAFE_RELEASE(pStream);
+									if (NewId) {
+										WpdDeleteObject(pDeviceContent, NewId);
+										CoTaskMemFree(NewId);
+										NewId=NULL;
+									}
+								}
+								IPortableDeviceValues* spResInfo=NULL;
 								DWORD cnt=0;
 								UINT PreviewImageWidth=0;
 								UINT PreviewImageHeight=0;
@@ -3904,15 +3927,8 @@ int __stdcall FsPutFileW(WCHAR* LocalName,WCHAR* RemoteName,int CopyFlags)
 										hr2=E_FAIL;
 
 									int err=0;
-									if (SUCCEEDED(hr2))
-										hr2=pStream->QueryInterface(IID_IPortableDeviceDataStream,(void**)&pResultingStream);
-									else
-										err=1;
 									SAFE_RELEASE(pStream);
-									if (SUCCEEDED(hr2) && pResultingStream) {
-										hr2=pResultingStream->GetObjectID(&NewId);
-										SAFE_RELEASE(pResultingStream);
-									} else if (err==0) {
+									if (!NewId && err==0) {
 										hr2=E_FAIL;
 										err=2;
 									}
@@ -4045,9 +4061,32 @@ int __stdcall FsPutFileW(WCHAR* LocalName,WCHAR* RemoteName,int CopyFlags)
 								SAFE_RELEASE(spResInfo);
 								SAFE_RELEASE(pKeys);
 								SAFE_RELEASE(pResources);
+								SAFE_RELEASE(pStream);
+								if (result==FS_FILE_OK && isOverwrite) {
+									HRESULT hrDel=pItemStorageID ? WpdDeleteObject(pDeviceContent, pItemStorageID) : E_FAIL;
+									if (hrDel==S_OK && NewId) {
+										IPortableDeviceProperties* pProps=NULL;
+										if (SUCCEEDED(pDeviceContent->Properties(&pProps)) && pProps) {
+											IPortableDeviceValues* pRen=NULL;
+											if (SUCCEEDED(CoCreateInstance(CLSID_PortableDeviceValues, NULL, CLSCTX_INPROC_SERVER, IID_IPortableDeviceValues, (void**)&pRen))) {
+												pRen->SetStringValue(WPD_OBJECT_ORIGINAL_FILE_NAME, p);
+												pRen->SetStringValue(WPD_OBJECT_NAME, p);
+												if (FAILED(pProps->SetValues(NewId, pRen, NULL))) {
+													pRen->Clear();
+													pRen->SetStringValue(WPD_OBJECT_NAME, p);
+													pProps->SetValues(NewId, pRen, NULL);
+												}
+												SAFE_RELEASE(pRen);
+											}
+											SAFE_RELEASE(pProps);
+										}
+										RemoveFullPathFromCache(RemoteName);
+									} else if (hrDel!=S_OK) {
+										result=FS_FILE_WRITEERROR;
+									}
+								}
 								if (NewId)
 									CoTaskMemFree(NewId);
-								SAFE_RELEASE(pStream);
 
 /* Doesn't work, returns access denied
 								// set date again after copying!
