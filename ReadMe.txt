@@ -1,4 +1,4 @@
-Mobile Devices plugin v0.9.88
+Mobile Devices plugin v0.9.89
 =======================
 Modified from Windows Media Audio 2 (wpdplug) by Christian Ghisler.
 

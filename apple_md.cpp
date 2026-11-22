@@ -4477,15 +4477,20 @@ BOOL AppleMdDelete(LPCWSTR deviceName, LPCWSTR relPath)
 	}
 	AppleLock();
 	ApplePhone* p=FindPhoneByName(deviceName);
+	if (!p) {
+		AppleUnlock();
+		return FALSE;
+	}
+	XferAddKind(p, 1, 1);
 	AppleUnlock();
-	if (!p)
-		return FALSE;
 	afc_connection conn=NULL;
-	if (!ResolveAfc(p, relPath, &conn, afcPath, 1024, TRUE) || !conn)
-		return FALSE;
-	BOOL ok=AfcDeleteTree(conn, afcPath);
-	if (!ok)
-		SetPhoneLastError(p, L"Удаление", 0xE8000001, L"Не удалось удалить файл через AFC.");
+	BOOL ok=FALSE;
+	if (ResolveAfc(p, relPath, &conn, afcPath, 1024, TRUE) && conn) {
+		ok=AfcDeleteTree(conn, afcPath);
+		if (!ok)
+			SetPhoneLastError(p, L"Удаление", 0xE8000001, L"Не удалось удалить файл через AFC.");
+	}
+	PhoneUnpinAfc(p);
 	return ok;
 }
 
@@ -4501,13 +4506,18 @@ BOOL AppleMdMkDir(LPCWSTR deviceName, LPCWSTR relPath)
 		return FALSE;
 	AppleLock();
 	ApplePhone* p=FindPhoneByName(deviceName);
+	if (!p) {
+		AppleUnlock();
+		return FALSE;
+	}
+	XferAddKind(p, 1, 1);
 	AppleUnlock();
-	if (!p)
-		return FALSE;
 	afc_connection conn=NULL;
-	if (!ResolveAfc(p, relPath, &conn, afcPath, 1024, TRUE) || !conn)
-		return FALSE;
-	return pAFCDirectoryCreate(conn, afcPath)==0;
+	BOOL ok=FALSE;
+	if (ResolveAfc(p, relPath, &conn, afcPath, 1024, TRUE) && conn)
+		ok=(pAFCDirectoryCreate(conn, afcPath)==0);
+	PhoneUnpinAfc(p);
+	return ok;
 }
 
 static const char* AfcBaseName(const char* path)
@@ -4624,18 +4634,23 @@ static int AppleMdPutFileWork(LPCWSTR deviceName, LPCWSTR relPath, LPCWSTR local
 		return FS_FILE_NOTSUPPORTED;
 	PutLock(locked);
 	ApplePhone* p=FindPhoneByName(deviceName);
-	PutUnlock(locked);
-	if (!p)
+	if (!p) {
+		PutUnlock(locked);
 		return FS_FILE_WRITEERROR;
+	}
+	XferAddKind(p, 1, 1);
+	PutUnlock(locked);
 	/* CreateHouseArrest / StartService must run without AppleLock:
 	   the device run loop takes the same lock. */
 	afc_connection conn=NULL;
 	if (!ResolveAfc(p, relPath, &conn, afcPath, 1024, TRUE) || !conn) {
+		PhoneUnpinAfc(p);
 		MdLog("put no session");
 		SetPhoneLastError(p, L"Загрузка в приложение", 0xE8000001, L"house_arrest не открылся.");
 		return FS_FILE_WRITEERROR;
 	}
 	PutLock(locked);
+	XferAddKind(p, 1, -1);
 	p=FindPhoneByName(deviceName);
 	if (!p || p->xferGone) {
 		PutUnlock(locked);
