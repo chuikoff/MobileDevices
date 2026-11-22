@@ -2816,7 +2816,9 @@ static DWORD WINAPI DeleteCancelThread(LPVOID arg)
 	for (;;) {
 		if (WaitForSingleObject(w->done, 200)==WAIT_OBJECT_0)
 			break;
-		if (IsAbortRequested() || GetTickCount()-start>=20000) {
+		// A cold Android MTP stack can spend one or two minutes on the first
+		// delete. Cancel only a real hang, or an explicit abort.
+		if (IsAbortRequested() || GetTickCount()-start>=180000) {
 			WpdTrace("wpd delete cancel");
 			if (w->dev)
 				w->dev->Cancel();
