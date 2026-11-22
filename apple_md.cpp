@@ -1818,6 +1818,10 @@ BOOL AppleMdFillInfoEx(LPCWSTR deviceName, PluginDeviceInfo* info, BOOL activeDi
 		return FALSE;
 	}
 
+	int phoneIdx=(int)(p-g_phones);
+	WCHAR phoneKey[80];
+	PhoneKey(p, phoneKey, 80);
+
 	wcslcpy(info->manufacturer, L"Apple", 128);
 	if (p->ios[0] && p->build[0])
 		swprintf_s(info->firmware, countof(info->firmware), L"%s (%s)", p->ios, p->build);
@@ -1827,6 +1831,12 @@ BOOL AppleMdFillInfoEx(LPCWSTR deviceName, PluginDeviceInfo* info, BOOL activeDi
 	wcslcpy(info->os, L"iOS", 40);
 	if (p->ios[0])
 		swprintf_s(info->os, countof(info->os), L"iOS %s", p->ios);
+
+	/* Pin the phone across I/O so disconnect does not compact g_phones under p.
+	   Never call StartService / house_arrest / crashreport while holding AppleLock:
+	   CFRunLoop callbacks need the same lock. */
+	XferAddKind(p, 1, 1);
+	AppleUnlock();
 
 	if (activeDiagnose) {
 		EnsureLockdown(p);
@@ -1841,8 +1851,6 @@ BOOL AppleMdFillInfoEx(LPCWSTR deviceName, PluginDeviceInfo* info, BOOL activeDi
 		if (!p->session)
 			EnsureLockdown(p);
 	}
-
-	FillAppleDiagnostics(p, info);
 
 	/* Prefer human MarketingName when lockdown provides it; else ProductType. */
 	CopyValue(p->dev, "MarketingName", info->model, 128);
@@ -1970,10 +1978,20 @@ BOOL AppleMdFillInfoEx(LPCWSTR deviceName, PluginDeviceInfo* info, BOOL activeDi
 		info->stor[n].freeBytes=userFree;
 		info->nstor++;
 	}
-	if (!activeDiagnose)
-		InfoCacheStore(deviceName, info);
+	AppleLock();
+	p=PhoneAfterUnlock(phoneIdx, phoneKey);
+	if (p) {
+		FillAppleDiagnostics(p, info);
+		if (!activeDiagnose)
+			InfoCacheStore(deviceName, info);
+		XferAddKind(p, 1, -1);
+		SweepGonePhones();
+	} else if (phoneIdx>=0 && phoneIdx<g_nphones) {
+		XferAddKind(&g_phones[phoneIdx], 1, -1);
+		SweepGonePhones();
+	}
 	AppleUnlock();
-	return TRUE;
+	return p!=NULL;
 }
 
 BOOL AppleMdFillInfo(LPCWSTR deviceName, PluginDeviceInfo* info)
