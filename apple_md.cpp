@@ -4275,44 +4275,44 @@ int AppleMdGetFile(LPCWSTR deviceName, LPCWSTR relPath, LPCWSTR localPath, ULONG
 		AppleUnlock();
 		return FS_FILE_READERROR;
 	}
-	int phoneIdx=(int)(p-g_phones);
+	WCHAR key[80];
+	PhoneKey(p, key, 80);
+	XferAddKind(p, 1, 1);
+	AppleUnlock();
+
 	if (kind==AR_PHOTOS || kind==AR_PHOTOS_REL) {
-		WCHAR key[80];
-		PhoneKey(p, key, 80);
-		XferAddKind(p, 1, 1);
-		AppleUnlock();
 		ApplePhotosBind();
-		BOOL okEns=EnsureSession(p) && p->afc && ApplePhotosEnsure(p->afc, key, GetPluginUiLanguage()==1);
-		PhoneUnpinAfc(p);
-		if (!okEns)
+		if (!EnsureSession(p) || !p->afc || !ApplePhotosEnsure(p->afc, key, GetPluginUiLanguage()==1)) {
+			PhoneUnpinAfc(p);
 			return FS_FILE_NOTFOUND;
-		AppleLock();
-		p=FindPhoneByName(deviceName);
-		if (!p) {
-			AppleUnlock();
-			return FS_FILE_READERROR;
 		}
 	}
 	afc_connection conn=NULL;
 	char afcPath[1024];
-	if (!p || !ResolveAfc(p, relPath, &conn, afcPath, 1024, FALSE) || !conn) {
-		AppleUnlock();
+	if (!ResolveAfc(p, relPath, &conn, afcPath, 1024, FALSE) || !conn) {
+		PhoneUnpinAfc(p);
 		return kind==AR_PHOTOS_REL ? FS_FILE_NOTFOUND : FS_FILE_READERROR;
 	}
 	afc_file_ref ref=0;
 	if (pAFCFileRefOpen(conn, afcPath, 1, &ref)!=0) {
-		AppleUnlock();
+		PhoneUnpinAfc(p);
 		return FS_FILE_NOTFOUND;
 	}
 	HANDLE out=CreateFileT((WCHAR*)localPath, GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_ALWAYS, 0, NULL);
 	if (out==INVALID_HANDLE_VALUE) {
 		SafeAfcFileClose(conn, ref);
-		AppleUnlock();
+		PhoneUnpinAfc(p);
 		return FS_FILE_WRITEERROR;
 	}
 	int xferKind=XferKindOf(p, conn);
-	XferAddKind(p, xferKind, 1);
-	AppleUnlock(); /* unlock around I/O chunks. The counter keeps DropPhoneSession from closing conn. */
+	if (xferKind<=0)
+		xferKind=1;
+	if (xferKind!=1) {
+		AppleLock();
+		XferAddKind(p, xferKind, 1);
+		XferAddKind(p, 1, -1);
+		AppleUnlock();
+	}
 	WCHAR remoteDisp[wdirtypemax];
 	wcslcpy(remoteDisp, L"\\", wdirtypemax-1);
 	wcslcat(remoteDisp, deviceName ? deviceName : L"", wdirtypemax-1);
