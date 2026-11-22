@@ -4112,18 +4112,43 @@ BOOL WpdFillDeviceInfo(LPCWSTR remoteName, PluginDeviceInfo* info, BOOL activeDi
 	info->androidAccessMode=-1;
 	info->androidOpenHr=S_OK;
 
+	LockPlugin();
 	DWORD idx=FindStoredDeviceIndexByPath(remoteName);
-	if (activeDiagnose && idx!=(DWORD)-1 && StoredPnpDeviceIDs && StoredPnpDeviceIDs[idx]) {
-		IPortableDevice* dev=NULL;
-		HRESULT hr=OpenWpdDevice(StoredPnpDeviceIDs[idx], &dev, idx);
-		if (SUCCEEDED(hr) && dev) {
-			if (StoredDevices && StoredDevices[idx])
-				StoredDevices[idx]->Release();
-			if (StoredDevices)
-				StoredDevices[idx]=dev;
+	IPortableDevice* existing=(idx!=(DWORD)-1 && StoredDevices) ? StoredDevices[idx] : NULL;
+	if (existing) {
+		IPortableDeviceCapabilities* caps=NULL;
+		HRESULT hrPing=existing->Capabilities(&caps);
+		if (SUCCEEDED(hrPing) && caps) {
+			caps->Release();
+			if (StoredDeviceDiag) {
+				StoredDeviceDiag[idx].lastOpenHr=S_OK;
+				if (StoredDeviceDiag[idx].accessMode==0)
+					StoredDeviceDiag[idx].accessMode=1;
+			}
+		} else if (FAILED(hrPing) && StoredDeviceDiag) {
+			StoredDeviceDiag[idx].lastOpenHr=hrPing;
+			StoredDeviceDiag[idx].accessMode=0;
 		}
 	}
+	WCHAR pnpId[512]=L"";
+	if (!existing && activeDiagnose && idx!=(DWORD)-1 && StoredPnpDeviceIDs && StoredPnpDeviceIDs[idx])
+		wcslcpy(pnpId, StoredPnpDeviceIDs[idx], countof(pnpId));
+	UnlockPlugin();
 
+	if (pnpId[0]) {
+		IPortableDevice* dev=NULL;
+		HRESULT hr=OpenWpdDevice(pnpId, &dev, idx);
+		LockPlugin();
+		if (SUCCEEDED(hr) && dev) {
+			if (StoredDevices && !StoredDevices[idx])
+				StoredDevices[idx]=dev;
+			else
+				SAFE_RELEASE(dev);
+		}
+		UnlockPlugin();
+	}
+
+	LockPlugin();
 	if (idx!=(DWORD)-1 && StoredDeviceDiag) {
 		info->androidAccessMode=StoredDeviceDiag[idx].accessMode;
 		info->androidOpenHr=StoredDeviceDiag[idx].lastOpenHr;
@@ -4132,6 +4157,7 @@ BOOL WpdFillDeviceInfo(LPCWSTR remoteName, PluginDeviceInfo* info, BOOL activeDi
 		info->lastErrorCode=StoredDeviceDiag[idx].lastErrorCode;
 		wcslcpy(info->lastErrorMsg, StoredDeviceDiag[idx].lastErrorMsg, countof(info->lastErrorMsg));
 	}
+	UnlockPlugin();
 
 	int lang=GetPluginUiLanguage();
 	BOOL ru=(lang==1);
