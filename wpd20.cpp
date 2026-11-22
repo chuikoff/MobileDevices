@@ -373,6 +373,11 @@ BOOL QueryDeviceInfoEx(LPCWSTR remoteName, PluginDeviceInfo* info, BOOL activeDi
 	info->batteryHealth=-1;
 	info->batteryCycles=-1;
 
+	ComApartmentGuard comApt;
+	if (!comApt.ok())
+		return FALSE;
+	InitFunctionsIfNeeded(TRUE);
+
 	/* If at root (\ or empty) and no device specified, pick first device if available */
 	if (!remoteName || remoteName[0]==0 || (remoteName[0]=='\\' && remoteName[1]==0)) {
 		if (AppleMdCount()>0) {
@@ -385,7 +390,7 @@ BOOL QueryDeviceInfoEx(LPCWSTR remoteName, PluginDeviceInfo* info, BOOL activeDi
 
 		/* No device connected */
 		info->hasConnectionInfo=TRUE;
-		info->isApple=TRUE;
+		info->isApple=FALSE;
 		info->isDiagnose=activeDiagnose;
 		AppleMdGetDllInfo(info->mdDllPath, countof(info->mdDllPath), info->mdDllVersion, countof(info->mdDllVersion));
 		info->mdDllLoaded=(info->mdDllPath[0]!=0);
@@ -410,10 +415,7 @@ BOOL QueryDeviceInfoEx(LPCWSTR remoteName, PluginDeviceInfo* info, BOOL activeDi
 			return AppleMdFillInfoEx(dev, info, activeDiagnose);
 	}
 
-	ComApartmentGuard comApt;
-	if (!comApt.ok())
-		return FALSE;
-	if (!InitFunctionsIfNeeded(TRUE))
+	if (StoredNumIds==0)
 		return FALSE;
 
 	WCHAR path[wdirtypemax];
@@ -558,6 +560,9 @@ void FormatDeviceInfo(int lang, const PluginDeviceInfo* info, WCHAR* out, int ou
 	WCHAR line[256];
 	const WCHAR* na=ru ? L"н/д" : L"n/a";
 
+	if (info->model[0]==0 && info->serial[0]==0 && info->protocol[0]==0 && info->nstor==0) {
+		wcslcat(out, ru ? L"Устройства: не обнаружены\r\n" : L"Devices: none connected\r\n", outcch);
+	} else {
 	if (info->os[0]) {
 		swprintf_s(line, ru ? L"ОС: %s\r\n" : L"OS: %s\r\n", info->os);
 		wcslcat(out, line, outcch);
@@ -680,11 +685,25 @@ void FormatDeviceInfo(int lang, const PluginDeviceInfo* info, WCHAR* out, int ou
 		swprintf_s(line, ru ? L"Приложения: %s\r\n" : L"Apps: %s\r\n", as);
 		wcslcat(out, line, outcch);
 	}
+	}
 
 	/* Connection diagnostics */
 	if (info->hasConnectionInfo) {
 		wcslcat(out, ru ? L"\r\n--- Соединение ---\r\n" : L"\r\n--- Connection ---\r\n", outcch);
-		if (info->isApple) {
+		if (info->model[0]==0 && info->serial[0]==0 && info->protocol[0]==0 && info->nstor==0) {
+			if (info->mdDllLoaded) {
+				if (info->mdDllVersion[0])
+					swprintf_s(line, ru ? L"Библиотека Apple: загружена (версия %s)\r\n" : L"Apple Library: loaded (version %s)\r\n", info->mdDllVersion);
+				else
+					swprintf_s(line, ru ? L"Библиотека Apple: загружена (%s)\r\n" : L"Apple Library: loaded (%s)\r\n", info->mdDllPath);
+			} else {
+				swprintf_s(line, ru ? L"Библиотека Apple: не найдена (установите «Apple Devices» из Microsoft Store)\r\n"
+				                    : L"Apple Library: not found (install Apple Devices from Microsoft Store)\r\n");
+			}
+			wcslcat(out, line, outcch);
+			wcslcat(out, ru ? L"Apple (iPhone): устройство не подключено\r\n" : L"Apple (iPhone): device not connected\r\n", outcch);
+			wcslcat(out, ru ? L"Android (MTP): служба WPD доступна, устройство не подключено\r\n" : L"Android (MTP): WPD service available, device not connected\r\n", outcch);
+		} else if (info->isApple) {
 			if (info->mdDllLoaded) {
 				if (info->mdDllVersion[0])
 					swprintf_s(line, ru ? L"Библиотека Apple: загружена (версия %s)\r\n" : L"Apple Library: loaded (version %s)\r\n", info->mdDllVersion);

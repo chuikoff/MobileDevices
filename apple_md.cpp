@@ -676,15 +676,16 @@ static void ClosePanicAfc(ApplePhone* p)
 	p->panicEnt=NULL;
 }
 
-static void SetPhoneLastError(ApplePhone* p, LPCWSTR op, DWORD code, LPCWSTR msg)
+static void SetPhoneLastError(ApplePhone* p, LPCWSTR opRu, LPCWSTR opEn, DWORD code, LPCWSTR msgRu, LPCWSTR msgEn)
 {
 	if (!p) return;
+	BOOL ru=(GetPluginUiLanguage()==1);
 	SYSTEMTIME st;
 	GetLocalTime(&st);
 	swprintf_s(p->lastErrorTime, countof(p->lastErrorTime), L"%02d:%02d", st.wHour, st.wMinute);
-	wcslcpy(p->lastErrorOp, op ? op : L"", countof(p->lastErrorOp));
+	wcslcpy(p->lastErrorOp, ru ? (opRu ? opRu : L"") : (opEn ? opEn : L""), countof(p->lastErrorOp));
 	p->lastErrorCode=code;
-	wcslcpy(p->lastErrorMsg, msg ? msg : L"", countof(p->lastErrorMsg));
+	wcslcpy(p->lastErrorMsg, ru ? (msgRu ? msgRu : L"") : (msgEn ? msgEn : L""), countof(p->lastErrorMsg));
 }
 
 static BOOL EnsureLockdown(ApplePhone* p)
@@ -698,7 +699,7 @@ static BOOL EnsureLockdown(ApplePhone* p)
 	mach_error_t err=pAMDeviceConnect(p->dev);
 	if (err!=0) {
 		p->lastLockdownErr=err;
-		SetPhoneLastError(p, L"Подключение", (DWORD)err, L"Не удалось подключиться к usbmuxd.");
+		SetPhoneLastError(p, L"Подключение", L"Connection", (DWORD)err, L"Не удалось подключиться к usbmuxd.", L"Failed to connect to usbmuxd.");
 		return FALSE;
 	}
 	if (!pAMDeviceIsPaired || !pAMDeviceIsPaired(p->dev)) {
@@ -706,7 +707,7 @@ static BOOL EnsureLockdown(ApplePhone* p)
 		p->lastLockdownErr=0xE800001A;
 		if (pAMDeviceDisconnect)
 			pAMDeviceDisconnect(p->dev);
-		SetPhoneLastError(p, L"Проверка доверия", 0xE800001A, L"iPhone не сопряжён. Нажмите «Доверять» на экране телефона.");
+		SetPhoneLastError(p, L"Проверка доверия", L"Trust check", 0xE800001A, L"iPhone не сопряжён. Нажмите «Доверять» на экране телефона.", L"iPhone is not paired. Tap \"Trust\" on phone screen.");
 		return FALSE;
 	}
 	p->lastPaired=1;
@@ -714,14 +715,14 @@ static BOOL EnsureLockdown(ApplePhone* p)
 		p->lastLockdownErr=err;
 		if (pAMDeviceDisconnect)
 			pAMDeviceDisconnect(p->dev);
-		SetPhoneLastError(p, L"Сопряжение", (DWORD)err, L"Ошибка сопряжения (введите код на iPhone).");
+		SetPhoneLastError(p, L"Сопряжение", L"Pairing", (DWORD)err, L"Ошибка сопряжения (введите код на iPhone).", L"Pairing error (enter passcode on iPhone).");
 		return FALSE;
 	}
 	if (pAMDeviceStartSession && (err=pAMDeviceStartSession(p->dev))!=0) {
 		p->lastLockdownErr=err;
 		if (pAMDeviceDisconnect)
 			pAMDeviceDisconnect(p->dev);
-		SetPhoneLastError(p, L"Сессия lockdown", (DWORD)err, L"Не удалось начать сессию lockdown.");
+		SetPhoneLastError(p, L"Сессия lockdown", L"Lockdown session", (DWORD)err, L"Не удалось начать сессию lockdown.", L"Failed to start lockdown session.");
 		return FALSE;
 	}
 	p->lastLockdownErr=0;
@@ -797,14 +798,14 @@ static BOOL EnsureSession(ApplePhone* p)
 	int sock=0;
 	if (!StartNamedService(p, "com.apple.afc", &sock)) {
 		p->lastAfcErr=1;
-		SetPhoneLastError(p, L"Файловый доступ (AFC)", 0xE8000001, L"com.apple.afc не запустился. Разблокируйте экран iPhone.");
+		SetPhoneLastError(p, L"Файловый доступ (AFC)", L"File access (AFC)", 0xE8000001, L"com.apple.afc не запустился. Разблокируйте экран iPhone.", L"com.apple.afc failed to start. Unlock iPhone screen.");
 		return FALSE;
 	}
 	afc_connection conn=NULL;
 	if (!AfcOpenAny((void*)(intptr_t)(unsigned)sock, &conn) || !conn) {
 		p->lastAfcErr=2;
 		CloseAppleSock(&sock);
-		SetPhoneLastError(p, L"Файловый доступ (AFC)", 0xE8000002, L"AFCConnectionOpen не удалось инициализировать.");
+		SetPhoneLastError(p, L"Файловый доступ (AFC)", L"File access (AFC)", 0xE8000002, L"AFCConnectionOpen не удалось инициализировать.", L"Failed to initialize AFCConnectionOpen.");
 		return FALSE;
 	}
 	p->lastAfcErr=0;
@@ -3247,7 +3248,7 @@ static BOOL EnsureAppAfc(ApplePhone* p, LPCWSTR appName, BOOL preferDocuments, B
 	root[0]=0;
 	if (!AppDocumentsOpen(p, a->bundle, &conn, &sock, &docsOnly, root, (int)sizeof(root), skipDocuments)) {
 		p->lastHouseArrestErr=1;
-		SetPhoneLastError(p, L"Документы приложений", 0xE8000001, L"house_arrest не открылся.");
+		SetPhoneLastError(p, L"Документы приложений", L"App Documents", 0xE8000001, L"house_arrest не открылся.", L"house_arrest service failed to open.");
 		AfcCopyStr(p->appMiss, countof(p->appMiss), a->bundle);
 		p->appMissTick=GetTickCount();
 		return FALSE;
@@ -3562,7 +3563,7 @@ static DWORD WINAPI PanicOpenThread(LPVOID arg)
 		ApplePhone* p2=PanicJobPhone(j);
 		if (p2) {
 			p2->lastPanicErr=1;
-			SetPhoneLastError(p2, L"Журналы (Logs)", 0xE8000001, L"crashreport не запустился.");
+			SetPhoneLastError(p2, L"Журналы (Logs)", L"Logs (Crash reports)", 0xE8000001, L"crashreport не запустился.", L"crashreport service failed to start.");
 		}
 		AppleUnlock();
 	}
@@ -4488,7 +4489,7 @@ BOOL AppleMdDelete(LPCWSTR deviceName, LPCWSTR relPath)
 	if (ResolveAfc(p, relPath, &conn, afcPath, 1024, TRUE) && conn) {
 		ok=AfcDeleteTree(conn, afcPath);
 		if (!ok)
-			SetPhoneLastError(p, L"Удаление", 0xE8000001, L"Не удалось удалить файл через AFC.");
+			SetPhoneLastError(p, L"Удаление", L"Delete", 0xE8000001, L"Не удалось удалить файл через AFC.", L"Failed to delete file via AFC.");
 	}
 	PhoneUnpinAfc(p);
 	return ok;
@@ -4646,7 +4647,7 @@ static int AppleMdPutFileWork(LPCWSTR deviceName, LPCWSTR relPath, LPCWSTR local
 	if (!ResolveAfc(p, relPath, &conn, afcPath, 1024, TRUE) || !conn) {
 		PhoneUnpinAfc(p);
 		MdLog("put no session");
-		SetPhoneLastError(p, L"Загрузка в приложение", 0xE8000001, L"house_arrest не открылся.");
+		SetPhoneLastError(p, L"Загрузка в приложение", L"Upload to app", 0xE8000001, L"house_arrest не открылся.", L"house_arrest service failed to open.");
 		return FS_FILE_WRITEERROR;
 	}
 	PutLock(locked);
@@ -4686,7 +4687,7 @@ static int AppleMdPutFileWork(LPCWSTR deviceName, LPCWSTR relPath, LPCWSTR local
 		_snprintf_s(line, countof(line), _TRUNCATE, "put fail %s", afcPath);
 		MdLog(line);
 		CloseHandle(in);
-		SetPhoneLastError(p, L"Загрузка в приложение", 0xE8000002, L"Не удалось открыть файл на устройстве.");
+		SetPhoneLastError(p, L"Загрузка в приложение", L"Upload to app", 0xE8000002, L"Не удалось открыть файл на устройстве.", L"Failed to open file on device.");
 		return FS_FILE_WRITEERROR;
 	}
 	if (usedPath[0])
