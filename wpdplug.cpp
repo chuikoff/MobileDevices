@@ -3361,8 +3361,8 @@ int __stdcall FsGetFileW(WCHAR* RemoteName,WCHAR* LocalName,int CopyFlags,Remote
 			if (ri)
 				sz=MakeU64(ri->SizeLow, ri->SizeHigh);
 			int r=AppleMdGetFile(dev, rel, WLocalName, sz, mt);
-			if (r==FS_FILE_OK && Move)
-				AppleMdDelete(dev, rel);
+			if (r==FS_FILE_OK && Move && !AppleMdDelete(dev, rel))
+				r=FS_FILE_WRITEERROR;
 			return r;
 		}
 	}
@@ -3520,12 +3520,21 @@ int __stdcall FsGetFileW(WCHAR* RemoteName,WCHAR* LocalName,int CopyFlags,Remote
 			}
 		}
 	}
-	if (result==FS_FILE_OK && Move && pDeviceContent && pItemStorageID) {
-		if (WpdDeleteObject(pDeviceContent, pItemStorageID)==S_OK)
-			RemoveFullPathFromCache(WRemoteName);
-	}
 	SAFE_RELEASE(pStream);
 	SAFE_RELEASE(pResources);
+	if (result==FS_FILE_OK && Move) {
+		HRESULT hrd=E_FAIL;
+		if (pDeviceContent && pItemStorageID)
+			hrd=WpdDeleteObject(pDeviceContent, pItemStorageID);
+		if (hrd==S_OK) {
+			RemoveFullPathFromCache(WRemoteName);
+		} else {
+			DWORD didx=FindStoredDeviceIndexByPath(WRemoteName);
+			BOOL ru=(GetPluginUiLanguage()==1);
+			SetWpdLastError(didx, ru ? L"Перемещение" : L"Move", hrd, DecodeWpdHResult(hrd, ru));
+			result=FS_FILE_WRITEERROR;
+		}
+	}
 	if (pItemStorageID)
 		CoTaskMemFree(pItemStorageID);
 	SAFE_RELEASE(pDeviceContent);
