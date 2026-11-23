@@ -1842,8 +1842,8 @@ BOOL ApplePhotosEnsure(void* conn, const WCHAR* udid, int russian)
 		if (cur && SameSql(cur, &sig)) {
 			BOOL walMoved=cur->sqlMtime!=sig.mtime || cur->walSize!=sig.walSize || cur->walMtime!=sig.walMtime;
 			DWORD age=now-cur->builtTick;
-			/* shortcut: 3s debounce allows rapid navigation without re-pulling DB while WAL changes, upgrade if notification available */
-			if (!walMoved || age<3000) {
+			/* shortcut: 180s debounce allows navigation without re-pulling DB while WAL changes, upgrade if notification available */
+			if (!walMoved || age<180000) {
 				if (cur->russian!=russian)
 					ApplyLang(cur, russian);
 				BOOL ok=cur->nalbums>0;
